@@ -14,15 +14,16 @@ type Row = {
   origin?: 'SYSTEM' | 'CLIENT';
   convCreatedAt?: string;
   convUpdatedAt?: string;
+  waMessageId?: string | null;
 };
 
 export function ConversationsChat({ phone, onClose }: { phone: string; onClose: () => void }) {
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(false);
   const listRef = useRef<HTMLDivElement | null>(null);
-  const signalRActiveRef = useRef<boolean>(false);
   const lastSigRef = useRef<string>("0");
   const rowsRef = useRef<Row[]>([]);
+  const [hubUrl, setHubUrl] = useState<string>("");
 
   function computeSignature(list: Row[]): string {
     if (list.length === 0) return "0";
@@ -30,90 +31,32 @@ export function ConversationsChat({ phone, onClose }: { phone: string; onClose: 
     return `${list.length}:${last.messageId}:${last.messageCreatedAt}`;
   }
 
+  // removido JoinMessageGroup
+
   useEffect(() => {
     rowsRef.current = rows;
   }, [rows]);
 
+  // Busca a URL do hub a partir do EXTERNAL_API_BASE_URL pela rota interna
   useEffect(() => {
-    let active = true;
-    let controller = new AbortController();
-    let es: EventSource | null = null;
-
-    async function fetchOnce(initial: boolean) {
-      if (!active) return;
+    let cancelled = false;
+    (async () => {
       try {
-        if (initial) setLoading(true);
-        const res = await fetch(`/api/conversations?phone=${encodeURIComponent(phone)}`, {
-          signal: controller.signal,
-          cache: 'no-store',
-        });
-        if (!active) return;
-        if (res.ok) {
-          const { data } = await res.json();
-          if (!active) return;
-          const list: Row[] = Array.isArray(data) ? data : [];
-          const sig = computeSignature(list);
-          if (sig !== lastSigRef.current) {
-            if (list.length > 0 || rowsRef.current.length === 0) {
-              setRows(list);
-              lastSigRef.current = sig;
-            }
-          }
-        }
+        const r = await fetch('/api/hub-url', { cache: 'no-store' });
+        const j = await r.json();
+        if (!cancelled && typeof j?.hubUrl === 'string') setHubUrl(j.hubUrl);
       } catch {
-        // silencioso no polling
-      } finally {
-        if (initial) setLoading(false);
+        if (!cancelled) setHubUrl("");
       }
-    }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
-    // Tenta SSE primeiro; se falhar, permanece com o polling
-    try {
-      es = new EventSource(`/api/conversations/stream?phone=${encodeURIComponent(phone)}`);
-      es.onmessage = (evt) => {
-        try {
-          const payload = JSON.parse(evt.data);
-          if (payload?.type === 'conversations') {
-            const list: Row[] = Array.isArray(payload.data) ? payload.data : [];
-            const sig = computeSignature(list);
-            if (sig !== lastSigRef.current) {
-              if (list.length > 0 || rowsRef.current.length === 0) {
-                setRows(list);
-                lastSigRef.current = sig;
-              }
-            }
-          }
-        } catch {}
-      };
-      es.onerror = () => {
-        es?.close();
-        es = null;
-      };
-    } catch {}
+  // (removido polling/SSE) carregamento passa a ser iniciado via SignalR
 
-    fetchOnce(true);
-
-    const intervalId = setInterval(() => {
-      if (!active) return;
-      if (signalRActiveRef.current) return; // se SignalR estiver ativo, não fazer polling
-      controller.abort();
-      controller = new AbortController();
-      fetchOnce(false);
-    }, 5000);
-
-    return () => {
-      active = false;
-      clearInterval(intervalId);
-      controller.abort();
-      es?.close();
-    };
-  }, [phone]);
-
-  // Tenta usar SignalR se disponível (NEXT_PUBLIC_SIGNALR_URL) e pacote instalado; fallback permanece
+  // Tenta usar SignalR utilizando a hubUrl obtida do backend
   useEffect(() => {
-    const hubUrl = process.env.NEXT_PUBLIC_SIGNALR_URL;
     if (!hubUrl) return;
-    let stopped = false;
     type HubConnectionInstance = {
       on: (event: string, cb: (payload: unknown) => void) => void;
       start: () => Promise<void>;
@@ -130,12 +73,49 @@ export function ConversationsChat({ phone, onClose }: { phone: string; onClose: 
       try {
         const dynamicImport = Function('m', 'return import(m)') as (m: string) => Promise<SignalRModule>;
         const signalR = await dynamicImport('@microsoft/signalr').catch(() => null);
-        if (!signalR) return; // pacote não instalado → mantém polling
+        if (!signalR) {
+          // Sem cliente SignalR disponível: ainda assim carregue o estado inicial uma vez
+          await (async () => {
+            try {
+              setLoading(true);
+              const res = await fetch(`/api/conversations?phone=${encodeURIComponent(phone)}`, { cache: 'no-store' });
+              const { data } = await res.json();
+              const list: Row[] = Array.isArray(data) ? data : [];
+              const sig = computeSignature(list);
+              if (sig !== lastSigRef.current) {
+                if (list.length > 0 || rowsRef.current.length === 0) {
+                  setRows(list);
+                  lastSigRef.current = sig;
+                }
+              }
+            } catch {}
+            finally { setLoading(false); }
+          })();
+          return;
+        }
         const builder = new signalR.HubConnectionBuilder()
-          .withUrl(`${hubUrl}?phone=${encodeURIComponent(phone)}`)
+          .withUrl(hubUrl)
           .withAutomaticReconnect()
           .build();
         connection = builder;
+
+        // Eventos suportados: conversa criada/atualizada ou lote completo
+        const refreshLatest = async () => {
+          try {
+            setLoading(true);
+            const res = await fetch(`/api/conversations?phone=${encodeURIComponent(phone)}`, { cache: 'no-store' });
+            const { data } = await res.json();
+            const list: Row[] = Array.isArray(data) ? data : [];
+            const sig = computeSignature(list);
+            if (sig !== lastSigRef.current) {
+              if (list.length > 0 || rowsRef.current.length === 0) {
+                setRows(list);
+                lastSigRef.current = sig;
+              }
+            }
+          } catch {}
+          finally { setLoading(false); }
+        };
 
         builder.on('conversations', (payload: unknown) => {
           try {
@@ -151,20 +131,41 @@ export function ConversationsChat({ phone, onClose }: { phone: string; onClose: 
           } catch {}
         });
 
+        builder.on('conversationCreated', () => { void refreshLatest(); });
+        builder.on('conversationUpdated', () => { void refreshLatest(); });
+
         await builder.start();
         connection = builder;
-        if (!stopped) signalRActiveRef.current = true;
+        // Entrar no grupo do telefone explicitamente, conforme seu hub
+        try { await (builder as unknown as { invoke?: (m: string, ...a: unknown[]) => Promise<void> }).invoke?.('JoinPhoneGroup', phone); } catch {}
+        // Carrega estado inicial via REST
+        await refreshLatest();
       } catch {
-        // se falhar, mantém apenas polling/SSE
+        // Se conexão SignalR falhar, ainda assim faça um carregamento inicial
+        try {
+          setLoading(true);
+          const res = await fetch(`/api/conversations?phone=${encodeURIComponent(phone)}`, { cache: 'no-store' });
+          const { data } = await res.json();
+          const list: Row[] = Array.isArray(data) ? data : [];
+          const sig = computeSignature(list);
+          if (sig !== lastSigRef.current) {
+            if (list.length > 0 || rowsRef.current.length === 0) {
+              setRows(list);
+              lastSigRef.current = sig;
+            }
+          }
+        } catch {}
+        finally { setLoading(false); }
       }
     })();
 
     return () => {
-      stopped = true;
-      signalRActiveRef.current = false;
+      // Sair dos grupos e encerrar conexão
+      try { (connection as unknown as { invoke?: (m: string, ...a: unknown[]) => Promise<void> }).invoke?.('LeavePhoneGroup', phone); } catch {}
+      // removido LeaveMessageGroup
       try { if (connection) void connection.stop(); } catch {}
     };
-  }, [phone]);
+  }, [phone, hubUrl]);
 
   const groups = useMemo(() => {
     const map = new Map<number, Row[]>();
