@@ -31,13 +31,9 @@ export async function GET(req: Request) {
     if (v) backendParams.set(key, v);
   }
 
-  const username = process.env.EXTERNAL_API_USERNAME;
-  const password = process.env.EXTERNAL_API_PASSWORD;
   const headers: Record<string, string> = { 'Accept': 'application/json' };
-  if (username && password) {
-    const token = Buffer.from(`${username}:${password}`).toString('base64');
-    headers['Authorization'] = `Basic ${token}`;
-  }
+  const appAuth = req.headers.get('cookie')?.split(';').map(s=>s.trim()).find(s=>s.startsWith('app_auth='))?.split('=')[1];
+  if (appAuth) headers['Authorization'] = decodeURIComponent(appAuth);
 
   try {
     const normalizedBase = baseUrl.replace(/\/+$/, '');

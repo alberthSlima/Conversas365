@@ -6,26 +6,38 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Eye, EyeOff, Loader2 } from "lucide-react";
 import { useState } from "react";
-import { useAuth } from "@/context/AuthContext";
 import { useRouter } from "next/navigation";
 
 export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
-  const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const { signIn } = useAuth();
   const [loading, setLoading] = useState(false);
   const router = useRouter();
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
-    const ok = await signIn(email, password);
-    setLoading(false);
-    if (ok) {
-      router.push("/dashboard");
+    // Autenticação na API própria (Basic via cookie app_auth)
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    if (res.ok) {
+      try {
+        const data = await res.json();
+        if (data?.user) {
+          localStorage.setItem('app_user', JSON.stringify(data.user));
+        }
+      } catch {}
+      setLoading(false);
+      router.push('/dashboard');
       router.refresh();
+      return;
     }
+    setLoading(false);
+    alert('Usuário ou senha inválidos');
   }
 
   return (
@@ -45,13 +57,13 @@ export default function LoginPage() {
         <CardContent>
           <form className="flex flex-col gap-4" onSubmit={handleSubmit}>
             <Input
-              type="email"
-              placeholder="E-mail"
+              type="text"
+              placeholder="usuário"
               className="h-12 bg-white border-gray-300 focus:border-[#0850FD] font-sans"
               autoComplete="username"
               required
-              value={email}
-              onChange={(e)=>setEmail(e.target.value)}
+              value={username}
+              onChange={(e)=>setUsername(e.target.value)}
             />
             <div className="relative">
               <Input

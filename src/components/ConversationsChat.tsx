@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Check, CheckCheck, Clock, XCircle } from 'lucide-react';
 
@@ -19,6 +19,20 @@ type Row = {
 export function ConversationsChat({ phone, onClose }: { phone: string; onClose: () => void }) {
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(false);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const signalRActiveRef = useRef<boolean>(false);
+  const lastSigRef = useRef<string>("0");
+  const rowsRef = useRef<Row[]>([]);
+
+  function computeSignature(list: Row[]): string {
+    if (list.length === 0) return "0";
+    const last = list[list.length - 1];
+    return `${list.length}:${last.messageId}:${last.messageCreatedAt}`;
+  }
+
+  useEffect(() => {
+    rowsRef.current = rows;
+  }, [rows]);
 
   useEffect(() => {
     let active = true;
@@ -37,7 +51,14 @@ export function ConversationsChat({ phone, onClose }: { phone: string; onClose: 
         if (res.ok) {
           const { data } = await res.json();
           if (!active) return;
-          setRows(Array.isArray(data) ? data : []);
+          const list: Row[] = Array.isArray(data) ? data : [];
+          const sig = computeSignature(list);
+          if (sig !== lastSigRef.current) {
+            if (list.length > 0 || rowsRef.current.length === 0) {
+              setRows(list);
+              lastSigRef.current = sig;
+            }
+          }
         }
       } catch {
         // silencioso no polling
@@ -53,7 +74,14 @@ export function ConversationsChat({ phone, onClose }: { phone: string; onClose: 
         try {
           const payload = JSON.parse(evt.data);
           if (payload?.type === 'conversations') {
-            setRows(Array.isArray(payload.data) ? payload.data : []);
+            const list: Row[] = Array.isArray(payload.data) ? payload.data : [];
+            const sig = computeSignature(list);
+            if (sig !== lastSigRef.current) {
+              if (list.length > 0 || rowsRef.current.length === 0) {
+                setRows(list);
+                lastSigRef.current = sig;
+              }
+            }
           }
         } catch {}
       };
@@ -67,6 +95,7 @@ export function ConversationsChat({ phone, onClose }: { phone: string; onClose: 
 
     const intervalId = setInterval(() => {
       if (!active) return;
+      if (signalRActiveRef.current) return; // se SignalR estiver ativo, não fazer polling
       controller.abort();
       controller = new AbortController();
       fetchOnce(false);
@@ -80,6 +109,64 @@ export function ConversationsChat({ phone, onClose }: { phone: string; onClose: 
     };
   }, [phone]);
 
+  // Tenta usar SignalR se disponível (NEXT_PUBLIC_SIGNALR_URL) e pacote instalado; fallback permanece
+  useEffect(() => {
+    const hubUrl = process.env.NEXT_PUBLIC_SIGNALR_URL;
+    if (!hubUrl) return;
+    let stopped = false;
+    type HubConnectionInstance = {
+      on: (event: string, cb: (payload: unknown) => void) => void;
+      start: () => Promise<void>;
+      stop: () => Promise<void>;
+    };
+    type HubConnectionBuilderLike = {
+      withUrl: (url: string) => HubConnectionBuilderLike;
+      withAutomaticReconnect: () => HubConnectionBuilderLike;
+      build: () => HubConnectionInstance;
+    };
+    type SignalRModule = { HubConnectionBuilder: new () => HubConnectionBuilderLike };
+    let connection: HubConnectionInstance | null = null;
+    (async () => {
+      try {
+        // import dinâmico e opcional; evita resolução no build
+        const dynamicImport = Function('m', 'return import(m)') as (m: string) => Promise<SignalRModule>;
+        const signalR = await dynamicImport('@microsoft/signalr').catch(() => null);
+        if (!signalR) return; // pacote não instalado → mantém polling
+        const builder = new signalR.HubConnectionBuilder()
+          .withUrl(`${hubUrl}?phone=${encodeURIComponent(phone)}`)
+          .withAutomaticReconnect()
+          .build();
+        connection = builder;
+
+        builder.on('conversations', (payload: unknown) => {
+          try {
+            const p = payload as { data?: unknown } | undefined;
+            const list = Array.isArray(p?.data) ? (p!.data as Row[]) : [];
+            const sig = computeSignature(list);
+            if (sig !== lastSigRef.current) {
+              if (list.length > 0 || rowsRef.current.length === 0) {
+                setRows(list);
+                lastSigRef.current = sig;
+              }
+            }
+          } catch {}
+        });
+
+        await builder.start();
+        connection = builder;
+        if (!stopped) signalRActiveRef.current = true;
+      } catch {
+        // se falhar, mantém apenas polling/SSE
+      }
+    })();
+
+    return () => {
+      stopped = true;
+      signalRActiveRef.current = false;
+      try { if (connection) void connection.stop(); } catch {}
+    };
+  }, [phone]);
+
   const groups = useMemo(() => {
     const map = new Map<number, Row[]>();
     for (const r of rows) {
@@ -89,14 +176,24 @@ export function ConversationsChat({ phone, onClose }: { phone: string; onClose: 
     }
     // ordenar mensagens de cada conversa por data asc (garantia extra)
     const arr = Array.from(map.entries()).map(([id, items]) => ({ id, items: items.sort((a,b) => new Date(a.messageCreatedAt).getTime() - new Date(b.messageCreatedAt).getTime()) }));
-    // ordenar conversas pela data de criação/atualização da conversation (não pelo timestamp da mensagem extraída)
-    arr.sort((a,b) => {
-      const ta = new Date(a.items[0]?.convCreatedAt || a.items[0]?.convUpdatedAt || 0).getTime();
-      const tb = new Date(b.items[0]?.convCreatedAt || b.items[0]?.convUpdatedAt || 0).getTime();
-      return ta - tb; // mais antigas em cima, mais recentes embaixo
-    });
+    // ordenar conversas por prioridade: convCreatedAt válida, depois id
+    function getKey(it: Row | undefined, fallbackId: number): number {
+      if (it?.convCreatedAt) {
+        const t = Date.parse(it.convCreatedAt);
+        if (Number.isFinite(t)) return t;
+      }
+      return fallbackId;
+    }
+    arr.sort((a, b) => getKey(a.items[0], a.id) - getKey(b.items[0], b.id));
     return arr;
   }, [rows]);
+
+  // sempre rolar para o final quando grupos mudarem
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [groups]);
 
 
   return (
@@ -110,16 +207,16 @@ export function ConversationsChat({ phone, onClose }: { phone: string; onClose: 
         {loading && <div className="p-4">Carregando...</div>}
 
         {!loading && (
-          <div className="flex-1 overflow-auto p-4 space-y-6">
+          <div ref={listRef} className="flex-1 overflow-auto p-4 space-y-6">
             {groups.map(g => (
               <div key={g.id} className="rounded-lg">
                 <div className="p-3 space-y-2">
                   {g.items.map(item => (
-                    <div key={item.messageId + '-' + item.messageCreatedAt} className={`flex ${item.origin === 'SYSTEM' ? 'justify-end' : 'justify-start'}`}>
-                      <div className={`max-w-[75%] rounded-md px-3 py-2 text-sm ${item.origin === 'SYSTEM' ? 'bg-blue-50 border border-blue-200' : 'bg-green-50 border border-green-200'}`}>
+                    <div key={item.messageId + '-' + item.messageCreatedAt} className={`flex ${item.initiatedBy === 'SYSTEM' ? 'justify-end' : 'justify-start'}`}>
+                      <div className={`max-w-[75%] rounded-md px-3 py-2 text-sm ${item.initiatedBy === 'SYSTEM' ? 'bg-blue-50 border border-blue-200' : 'bg-green-50 border border-green-200'}`}>
                         <div className="text-xs text-gray-500 mb-1">{new Date(item.messageCreatedAt).toLocaleString()}</div>
                         <div className="whitespace-pre-wrap break-words">{item.content}</div>
-                        {item.origin === 'SYSTEM' && (
+                        {item.initiatedBy === 'SYSTEM' && (
                           <div className="mt-1 text-xs flex items-center justify-end gap-1">
                             {renderTicks(item.state)}
                           </div>
