@@ -1,12 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-// Consome a rota interna que faz proxy para a API do backend (sem acesso direto ao banco)
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import { ConversationsChat } from "./ConversationsChat";
-import { Button } from "@/components/ui/button";
 
 const DEFAULT_PAGE_SIZE = 7;
 
@@ -125,16 +120,6 @@ export default function MessagesTable() {
     }
   }
 
-  function renderState(state?: string) {
-    const label = mapState(state);
-    const s = (state || '').toLowerCase();
-    if (s === 'delivered') return <Badge className="bg-green-500 text-white border-transparent">{label}</Badge>;
-    if (s === 'read') return <Badge className="bg-yellow-400 text-black border-transparent">{label}</Badge>;
-    if (s === 'initial') return <Badge className="bg-blue-500 text-white border-transparent">{label}</Badge>;
-    if (s === 'failed') return <Badge className="bg-red-500 text-white border-transparent">{label}</Badge>;
-    return <Badge variant="secondary">{label}</Badge>;
-  }
-
   function formatPhone(phone?: string) {
     if (!phone) return '-';
     const d = phone.replace(/\D/g, '');
@@ -156,60 +141,52 @@ export default function MessagesTable() {
       {/* Filtros acima da tabela */}
       <div className="flex flex-wrap items-end gap-3">
         <div className="w-48">
-          <Input
+          <input
             placeholder="codCli"
             value={codCliInput}
             onChange={(e)=> setCodCliInput(e.target.value)}
             onKeyDown={(e)=>{ if(e.key === 'Enter'){ applyCodCliFilter(); } }}
+            className="h-9 w-full border rounded-md px-2"
           />
         </div>
         <div className="w-64">
-          <Input
+          <input
             placeholder="telefone"
             value={phoneInput}
             onChange={(e)=> setPhoneInput(e.target.value)}
             onKeyDown={(e)=>{ if(e.key === 'Enter'){ applyPhoneFilter(); } }}
+            className="h-9 w-full border rounded-md px-2"
           />
         </div>
         <div className="w-40">
-          <Select value={filterStatus || undefined} onValueChange={(v: string)=>{setPage(0); setFilterStatus(v === 'all' ? '' : v)}}>
-            <SelectTrigger className="w-40"><SelectValue placeholder="status" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">Todos</SelectItem>
-              <SelectItem value="initial">Enviando</SelectItem>
-              <SelectItem value="delivered">Entregue</SelectItem>
-              <SelectItem value="read">Lida</SelectItem>
-              <SelectItem value="failed">Não entregue</SelectItem>
-            </SelectContent>
-          </Select>
+          <select className="w-40 h-9 border rounded-md px-2" value={filterStatus || 'all'} onChange={(e)=>{setPage(0); setFilterStatus(e.target.value === 'all' ? '' : e.target.value)}}>
+            <option value="all">Todos</option>
+            <option value="initial">Enviando</option>
+            <option value="delivered">Entregue</option>
+            <option value="read">Lida</option>
+            <option value="failed">Não entregue</option>
+          </select>
         </div>
         {/* Canal (opções dinâmicas com fallback) */}
         <div className="w-40">
-          <Select value={filterChannel || undefined} onValueChange={(v: string)=>{setPage(0); setFilterChannel(v === 'all' ? '' : v)}}>
-            <SelectTrigger className="w-40"><SelectValue placeholder="canal" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">Todos os canais</SelectItem>
-              {/* Opções dinâmicas a partir da página atual */}
-              {Array.from(new Set(messages.map((m: Message) => m.channel).filter((c): c is string => Boolean(c)))).map((c) => (
-                <SelectItem key={String(c)} value={String(c)}>{String(c)}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <select className="w-40 h-9 border rounded-md px-2" value={filterChannel || 'all'} onChange={(e)=>{setPage(0); setFilterChannel(e.target.value === 'all' ? '' : e.target.value)}}>
+            <option value="all">Todos os canais</option>
+            {Array.from(new Set(messages.map((m: Message) => m.channel).filter((c): c is string => Boolean(c)))).map((c) => (
+              <option key={String(c)} value={String(c)}>{String(c)}</option>
+            ))}
+          </select>
         </div>
         <div className="w-40">
-          <Select value={filterOrigin || undefined} onValueChange={(v: string)=>{setPage(0); setFilterOrigin(v === 'all' ? '' : v)}}>
-            <SelectTrigger className="w-40"><SelectValue placeholder="origem" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">Todas as origens</SelectItem>
-              <SelectItem value="Oferta">Oferta</SelectItem>
-              <SelectItem value="Nps">Nps</SelectItem>
-              <SelectItem value="Pedido">Pedido</SelectItem>
-              <SelectItem value="Corte">Corte</SelectItem>
-            </SelectContent>
-          </Select>
+          <select className="w-40 h-9 border rounded-md px-2" value={filterOrigin || 'all'} onChange={(e)=>{setPage(0); setFilterOrigin(e.target.value === 'all' ? '' : e.target.value)}}>
+            <option value="all">Todas as origens</option>
+            <option value="Oferta">Oferta</option>
+            <option value="Nps">Nps</option>
+            <option value="Pedido">Pedido</option>
+            <option value="Corte">Corte</option>
+          </select>
         </div>
         <div className="w-44">
-          <Input type="date" value={filterDate} onChange={(e)=>{setPage(0); setFilterDate(e.target.value)}} />
+          <input type="date" className="h-9 w-full border rounded-md px-2" value={filterDate} onChange={(e)=>{setPage(0); setFilterDate(e.target.value)}} />
         </div>
       </div>
       {loading && <p>Carregando...</p>}
@@ -236,7 +213,12 @@ export default function MessagesTable() {
                 <td className="px-4 py-2">{m.codCli ?? '-'}</td>
                 <td className="px-4 py-2 break-all max-w-[500px]">{m.content}</td>
                 <td className="px-4 py-2">{formatPhone(m.phone)}</td>
-                <td className="px-4 py-2">{renderState(m.state)}</td>
+                <td className="px-4 py-2"><span className={`inline-block px-2 py-0.5 rounded text-xs ${
+                  ((m.state||'').toLowerCase()==='delivered')? 'bg-green-500 text-white':
+                  ((m.state||'').toLowerCase()==='read')? 'bg-yellow-400 text-black':
+                  ((m.state||'').toLowerCase()==='initial')? 'bg-blue-500 text-white':
+                  ((m.state||'').toLowerCase()==='failed')? 'bg-red-500 text-white':'bg-gray-200 text-gray-700'
+                }`}>{mapState(m.state)}</span></td>
                 <td className="px-4 py-2">{new Date(m.createdAt).toLocaleString()}</td>
               </tr>
             ))}
@@ -249,12 +231,12 @@ export default function MessagesTable() {
         </table>
       )}
       <div className="flex justify-between items-center pt-2 gap-4 flex-wrap">
-        <Button variant="outline" disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>Anterior</Button>
+        <button type="button" className="px-3 py-1.5 border rounded-md text-sm disabled:opacity-50" disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>Anterior</button>
         <span>
           Página {page + 1} {totalPages ? `de ${totalPages}` : ""}
         </span>
         <div className="flex items-center gap-2">
-          <Input
+          <input
             type="number"
             className="w-24"
             min={1}
@@ -272,8 +254,8 @@ export default function MessagesTable() {
             }}
             placeholder="Ir para"
           />
-          <Button
-            variant="outline"
+          <button type="button"
+            className="px-3 py-1.5 border rounded-md text-sm disabled:opacity-50"
             disabled={!totalPages}
             onClick={() => {
               const raw = Number(pageInput);
@@ -281,29 +263,17 @@ export default function MessagesTable() {
               const clamped = Math.max(1, Math.min(n, totalPages || 1));
               setPage(clamped - 1);
             }}
-          >Ir</Button>
+          >Ir</button>
         </div>
-        <Button variant="outline" disabled={totalPages ? page + 1 >= totalPages : false} onClick={() => setPage((p) => p + 1)}>Próxima</Button>
+        <button type="button" className="px-3 py-1.5 border rounded-md text-sm disabled:opacity-50" disabled={totalPages ? page + 1 >= totalPages : false} onClick={() => setPage((p) => p + 1)}>Próxima</button>
 
         <div className="ml-auto flex items-center gap-2">
           <span className="text-sm text-gray-500">Itens por página</span>
-          <Select
-            value={String(pageSize)}
-            onValueChange={(v: string) => {
-              const n = Number(v);
-              setPageSize(n);
-              setPage(0);
-            }}
-          >
-            <SelectTrigger className="w-28">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="7">7</SelectItem>
-              <SelectItem value="14">14</SelectItem>
-              <SelectItem value="21">21</SelectItem>
-            </SelectContent>
-          </Select>
+          <select className="w-28 h-9 border rounded-md px-2" value={String(pageSize)} onChange={(e)=>{ setPageSize(Number(e.target.value)); setPage(0); }}>
+            <option value="7">7</option>
+            <option value="14">14</option>
+            <option value="21">21</option>
+          </select>
         </div>
       </div>
 
@@ -313,4 +283,5 @@ export default function MessagesTable() {
       )}
     </div>
   );
-} 
+}
+

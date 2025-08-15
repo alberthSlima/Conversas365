@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Button } from '@/components/ui/button';
+
 import { Check, CheckCheck, Clock, XCircle } from 'lucide-react';
 
 type Row = {
@@ -128,7 +128,6 @@ export function ConversationsChat({ phone, onClose }: { phone: string; onClose: 
     let connection: HubConnectionInstance | null = null;
     (async () => {
       try {
-        // import dinâmico e opcional; evita resolução no build
         const dynamicImport = Function('m', 'return import(m)') as (m: string) => Promise<SignalRModule>;
         const signalR = await dynamicImport('@microsoft/signalr').catch(() => null);
         if (!signalR) return; // pacote não instalado → mantém polling
@@ -195,13 +194,12 @@ export function ConversationsChat({ phone, onClose }: { phone: string; onClose: 
     el.scrollTop = el.scrollHeight;
   }, [groups]);
 
-
   return (
     <div className="fixed inset-0 z-50 flex items-stretch bg-white">
       <div className="flex-1 flex flex-col max-h-screen">
         <div className="p-4 border-b flex items-center gap-3">
           <h3 className="text-lg font-medium">Chat – {phone}</h3>
-          <div className="ml-auto"><Button variant="outline" onClick={onClose}>Fechar</Button></div>
+          <div className="ml-auto"><button type="button" onClick={onClose} className="px-3 py-1.5 border rounded-md text-sm hover:bg-gray-50">Fechar</button></div>
         </div>
 
         {loading && <div className="p-4">Carregando...</div>}

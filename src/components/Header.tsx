@@ -2,24 +2,20 @@
 
 import Image from "next/image";
 import { useEffect, useState } from "react";
-import {
-  Avatar,
-  AvatarFallback,
-} from "@/components/ui/avatar";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import { Button } from "@/components/ui/button";
 import { useRouter } from "next/navigation";
 
-function initials(email?: string) {
-  return email ? email.slice(0, 2).toUpperCase() : "US";
+function initials(nameOrEmail?: string) {
+  if (!nameOrEmail) return "US";
+  const s = nameOrEmail.trim();
+  if (!s) return "US";
+  const parts = s.split(/\s+/);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  return s.slice(0,2).toUpperCase();
 }
 
 export default function Header() {
   const [displayName, setDisplayName] = useState<string>('Usuário');
+  const [menuOpen, setMenuOpen] = useState<boolean>(false);
 
   useEffect(() => {
     try {
@@ -33,7 +29,6 @@ export default function Header() {
   const router = useRouter();
 
   async function handleLogout() {
-    // encerra sessão custom
     try { await fetch('/api/auth/logout', { method: 'POST' }); } catch {}
     router.replace("/login");
     router.refresh();
@@ -45,7 +40,7 @@ export default function Header() {
         {/* Logo */}
         <Image src="/medeiros365.png" alt="Logo" width={56} height={56} priority />
 
-        {/* Navegação (placeholder) */}
+        {/* Navegação */}
         <nav className="flex items-center gap-6 ml-8">
           <a href="/dashboard" className="text-[#0850FD] font-medium font-sans">
             Mensagens
@@ -53,30 +48,25 @@ export default function Header() {
         </nav>
 
         {/* Perfil */}
-        <Popover>
-          <PopoverTrigger asChild>
-            <Avatar className="h-8 w-8 cursor-pointer">
-              <AvatarFallback className="bg-[#F1F6FF] text-[#0850FD] text-sm font-medium">
-                {initials('user')}
-              </AvatarFallback>
-            </Avatar>
-          </PopoverTrigger>
-          <PopoverContent className="w-64 p-4">
-            <div className="space-y-3">
-              <div>
-                <p className="font-medium text-gray-900 break-all">{displayName}</p>
-              </div>
-              <Button
-                variant="outline"
-                className="w-full bg-red-50 border-red-200 text-red-600 hover:bg-red-100 cursor-pointer"
-                onClick={handleLogout}
-              >
-                Logout
-              </Button>
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setMenuOpen((v) => !v)}
+            className="h-8 w-8 rounded-full bg-[#F1F6FF] text-[#0850FD] text-sm font-medium flex items-center justify-center"
+            title={displayName}
+          >
+            {initials(displayName)}
+          </button>
+          {menuOpen && (
+            <div className="absolute right-0 mt-2 w-48 rounded-md border bg-white shadow-md p-3" role="menu">
+              <p className="font-medium text-gray-900 break-all mb-2">{displayName}</p>
+              <button type="button" onClick={handleLogout} className="w-full px-3 py-1.5 border rounded-md text-sm bg-red-50 border-red-200 text-red-600 hover:bg-red-100">Logout</button>
             </div>
-          </PopoverContent>
-        </Popover>
+          )}
+        </div>
       </div>
     </header>
   );
-} 
+}
+
+
