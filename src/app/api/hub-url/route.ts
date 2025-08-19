@@ -5,7 +5,9 @@ export async function GET() {
   if (!base) {
     return NextResponse.json({ error: 'EXTERNAL_API_BASE_URL not set' }, { status: 500 });
   }
-  const hubUrl = `${base.replace(/\/+$/, '')}/hubs/conversations`;
+  const trimmed = base.replace(/\/+$/, '');
+  const hostBase = trimmed.replace(/\/api\/v1\/?$/i, '');
+  const hubUrl = `${hostBase}/hubs/conversations`;
   return NextResponse.json({ hubUrl });
 }
 

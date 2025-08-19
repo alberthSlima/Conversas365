@@ -15,6 +15,7 @@ function initials(nameOrEmail?: string) {
 
 export default function Header() {
   const [displayName, setDisplayName] = useState<string>('Usuário');
+  const [role, setRole] = useState<string | undefined>(undefined);
   const [menuOpen, setMenuOpen] = useState<boolean>(false);
 
   useEffect(() => {
@@ -23,6 +24,7 @@ export default function Header() {
       if (raw) {
         const u = JSON.parse(raw) as { id?: number; username?: string; role?: string };
         if (u?.username) setDisplayName(u.username);
+        if (u?.role) setRole(u.role);
       }
     } catch {}
   }, []);
@@ -38,13 +40,18 @@ export default function Header() {
     <header className="bg-white border-b border-gray-200 px-6 py-4">
       <div className="flex items-center justify-between">
         {/* Logo */}
-        <Image src="/medeiros365.png" alt="Logo" width={56} height={56} priority />
+        <Image src="/medeiros365.png" alt="Logo" width={56} height={56} priority style={{ height: 'auto', width: '56px' }} />
 
         {/* Navegação */}
         <nav className="flex items-center gap-6 ml-8">
           <a href="/dashboard" className="text-[#0850FD] font-medium font-sans">
             Mensagens
           </a>
+          {String(role).toLowerCase() === 'admin' && (
+            <a href="/users" className="text-[#0850FD] font-medium font-sans">
+              Usuários
+            </a>
+          )}
         </nav>
 
         {/* Perfil */}

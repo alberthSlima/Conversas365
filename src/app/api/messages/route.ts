@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import type { Dispatcher } from 'undici';
 
 // Proxy para o backend. Não acessa mais o banco diretamente.
 // Suporta aliases: page/pageNumber e size/pageSize.
@@ -16,9 +17,9 @@ export async function GET(req: Request) {
   }
 
   // demais filtros opcionais (passados diretamente ao backend)
-  const passthroughKeys = ['codCli', 'phone', 'state', 'initiatedBy', 'createdAt', 'origin'];
+  const passthroughKeys = ['codCli', 'phone', 'state', 'initiatedBy', 'createdAt', 'origin', 'channel'];
 
-  const baseUrl = process.env.EXTERNAL_API_BASE_URL;
+  const baseUrl = process.env.EXTERNAL_API_BASE_URL || '';
   if (!baseUrl) {
     return NextResponse.json({ error: 'EXTERNAL_API_BASE_URL não configurado no ambiente do web' }, { status: 500 });
   }
@@ -26,6 +27,9 @@ export async function GET(req: Request) {
   const backendParams = new URLSearchParams();
   backendParams.set('pageNumber', String(pageNumber));
   backendParams.set('pageSize', String(pageSize));
+  // Compatibilidade: alguns backends usam page/size
+  backendParams.set('page', String(pageNumber));
+  backendParams.set('size', String(pageSize));
   for (const key of passthroughKeys) {
     const v = searchParams.get(key);
     if (v) backendParams.set(key, v);
@@ -33,15 +37,78 @@ export async function GET(req: Request) {
 
   const headers: Record<string, string> = { 'Accept': 'application/json' };
   const appAuth = req.headers.get('cookie')?.split(';').map(s=>s.trim()).find(s=>s.startsWith('app_auth='))?.split('=')[1];
-  if (appAuth) headers['Authorization'] = decodeURIComponent(appAuth);
+  if (appAuth) {
+    let token = appAuth;
+    try {
+      token = decodeURIComponent(token);
+      // Alguns navegadores/infra codificam duas vezes o valor do cookie
+      if (/%[0-9A-Fa-f]{2}/.test(token)) token = decodeURIComponent(token);
+    } catch {}
+    headers['Authorization'] = token.replace(/^Basic%20/i, 'Basic ');
+  }
 
   try {
-    const normalizedBase = baseUrl.replace(/\/+$/, '');
-    const apiRoot = normalizedBase.endsWith('/api/v1') ? normalizedBase : `${normalizedBase}/api/v1`;
-    const url = `${apiRoot}/Offers/Messages?${backendParams.toString()}`;
-    const res = await fetch(url, { headers, cache: 'no-store' });
-    const data = await res.json().catch(() => ({}));
-    return NextResponse.json(data, { status: res.status });
+    const apiRoot = baseUrl; // usar exatamente a variável de ambiente
+    let url = `${apiRoot}/Offers/Messages?${backendParams.toString()}`;
+    type RequestInitWithDispatcher = RequestInit & { dispatcher?: Dispatcher };
+    const fetchOptions: RequestInitWithDispatcher = { headers, cache: 'no-store' };
+    try {
+      const target = new URL(url);
+      const allowInsecure = (process.env.ALLOW_INSECURE_TLS === 'true');
+      const isLocalHttps = target.protocol === 'https:' && (target.hostname === 'localhost' || target.hostname === '127.0.0.1');
+      if (allowInsecure && isLocalHttps) {
+        const undici = await import('undici');
+        fetchOptions.dispatcher = new undici.Agent({ connect: { rejectUnauthorized: false } });
+      }
+    } catch {}
+    let res = await fetch(url, fetchOptions);
+    if (!res.ok && (res.status === 404 || res.status === 405)) {
+      // Fallback para backends que usam /Messages sem o prefixo Offers
+      url = `${apiRoot}/Messages?${backendParams.toString()}`;
+      res = await fetch(url, fetchOptions);
+    }
+    if (!res.ok) {
+      const txt = await res.text().catch(() => '');
+      return new NextResponse(txt || 'Upstream error', { status: res.status });
+    }
+    const raw: unknown = await res.json().catch(() => ({}));
+
+    // Normaliza diferentes formatos de resposta em { items, totalItems }
+    let items: unknown[] = [];
+    let totalItems: number | null = null;
+
+    function pickTotal(obj: Record<string, unknown>): number | null {
+      const cands = ['totalItems', 'total', 'totalCount', 'count', 'totalElements'];
+      for (const k of cands) {
+        const v = obj[k];
+        if (typeof v === 'number' && Number.isFinite(v)) return v;
+      }
+      return null;
+    }
+
+    if (Array.isArray(raw)) {
+      items = raw as unknown[];
+    } else if (raw && typeof raw === 'object') {
+      const obj = raw as Record<string, unknown>;
+      if (Array.isArray(obj.items)) {
+        items = obj.items as unknown[];
+        totalItems = pickTotal(obj);
+      } else if (Array.isArray(obj.data)) {
+        items = obj.data as unknown[];
+        totalItems = pickTotal(obj);
+      } else if (Array.isArray(obj.content)) {
+        items = obj.content as unknown[];
+        totalItems = pickTotal(obj);
+      } else {
+        // Primeiro array encontrado
+        for (const v of Object.values(obj)) {
+          if (Array.isArray(v)) { items = v as unknown[]; break; }
+        }
+        totalItems = pickTotal(obj);
+      }
+    }
+
+    return NextResponse.json({ items, totalItems }, { status: res.status });
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'Unknown error';
     return NextResponse.json({ error: msg }, { status: 500 });

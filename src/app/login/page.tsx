@@ -13,14 +13,19 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const router = useRouter();
 
-  async function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setLoading(true);
+    // Lê via FormData (mais confiável com autofill) com fallback no state
+    const form = new FormData(e.currentTarget);
+    const u = (form.get("username")?.toString() || username || "").trim();
+    const p = form.get("password")?.toString() || password || "";
+
     // Autenticação na API própria (Basic via cookie app_auth)
     const res = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ username: u, password: p }),
     });
     if (res.ok) {
       try {
@@ -58,6 +63,7 @@ export default function LoginPage() {
               <div className="relative w-full">
                 <input
                   type="text"
+                  name="username"
                   placeholder="usuário"
                   className="h-12 w-full bg-white border border-gray-300 rounded-md px-3 focus:outline-none focus:ring-2 focus:ring-[#0850FD] font-sans"
                   autoComplete="username"
@@ -69,6 +75,7 @@ export default function LoginPage() {
               <div className="relative w-full">
                 <input
                   type={showPassword ? "text" : "password"}
+                  name="password"
                   placeholder="Senha"
                   className="h-12 w-full bg-white border border-gray-300 rounded-md pl-3 pr-10 focus:outline-none focus:ring-2 focus:ring-[#0850FD] font-sans"
                   autoComplete="current-password"

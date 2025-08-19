@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Poppins } from "next/font/google";
 import "./globals.css";
+import { HubProvider } from "@/components/HubProvider";
 
 const poppins = Poppins({
   variable: "--font-poppins",
@@ -19,8 +20,10 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <body className={`${poppins.variable} antialiased`}>{children}</body>
+    <html lang="pt-BR">
+      <body className={`${poppins.variable} antialiased`}>
+        <HubProvider>{children}</HubProvider>
+      </body>
     </html>
   );
 }

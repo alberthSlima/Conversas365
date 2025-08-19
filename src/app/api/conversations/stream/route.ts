@@ -33,6 +33,7 @@ type MappedRow = {
 export async function GET(req: NextRequest) {
   const phone = req.nextUrl.searchParams.get('phone');
   if (!phone) return new Response('phone is required', { status: 400 });
+  const phoneParam: string = phone; // já validado acima
 
   const baseUrl = process.env.EXTERNAL_API_BASE_URL;
   if (!baseUrl) return new Response('EXTERNAL_API_BASE_URL not set', { status: 500 });
@@ -55,12 +56,16 @@ export async function GET(req: NextRequest) {
 
       const normalizedBase = baseUrl.replace(/\/+$/, '');
       const apiRoot = normalizedBase.endsWith('/api/v1') ? normalizedBase : `${normalizedBase}/api/v1`;
-      const url = `${apiRoot}/Offers/Conversations?phone=${encodeURIComponent(phone)}`;
+      let url = `${apiRoot}/Offers/Conversations?phone=${encodeURIComponent(phoneParam)}`;
 
       async function tick() {
         if (closed) return;
         try {
-          const res = await fetch(url, { headers, cache: 'no-store' });
+          let res = await fetch(url, { headers, cache: 'no-store' });
+          if (!res.ok && (res.status === 404 || res.status === 405)) {
+            url = `${apiRoot}/Conversations?phone=${encodeURIComponent(phoneParam)}`;
+            res = await fetch(url, { headers, cache: 'no-store' });
+          }
           const raw: unknown = await res.json().catch(() => ([]));
           const list: ApiConversationItem[] = Array.isArray(raw) ? (raw as ApiConversationItem[]) : [];
           const mapped: MappedRow[] = list.map((item) => ({

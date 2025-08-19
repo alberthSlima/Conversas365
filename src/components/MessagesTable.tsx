@@ -1,12 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ConversationsChat } from "./ConversationsChat";
+// import { useRouter } from "next/navigation";
+import { useHub } from "@/components/HubProvider";
 
 const DEFAULT_PAGE_SIZE = 7;
 
 interface Message {
   id: number;
+  conversationId: number;
   codCli?: string;
   content: string;
   createdAt: string;
@@ -16,6 +19,7 @@ interface Message {
 }
 
 export default function MessagesTable() {
+  // const router = useRouter();
   const [messages, setMessages] = useState<Message[]>([]);
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
@@ -24,9 +28,15 @@ export default function MessagesTable() {
   const [pageInput, setPageInput] = useState<string>('1');
   const [modalPhone, setModalPhone] = useState<string | null>(null);
 
+  const hub = useHub();
+  const joinedConvIdsRef = useRef<Set<number>>(new Set());
+  const messagesRef = useRef<Message[]>([]);
+
   function openConversationsModal(phone?: string) {
     if (phone) setModalPhone(phone);
   }
+
+  // Removido: abrir na página
 
   // filtros
   const [filterCodCli, setFilterCodCli] = useState('');
@@ -68,8 +78,6 @@ export default function MessagesTable() {
         type ApiConversation = {
           phone?: string;
           codCli?: string;
-          waId?: string | null;
-          waConvId?: string | null;
           state?: string;
           context?: unknown;
           initiatedBy?: string;
@@ -89,6 +97,7 @@ export default function MessagesTable() {
         const list: ApiItem[] = Array.isArray(items) ? items : [];
         const mapped: Message[] = list.map((i) => ({
           id: i.id,
+          conversationId: i.conversationId,
           codCli: i.conversation?.codCli,
           content: i.content,
           createdAt: i.createdAt,
@@ -108,10 +117,64 @@ export default function MessagesTable() {
     setPageInput(String(page + 1));
   }, [page]);
 
+  // manter referência da lista corrente para handlers do hub
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
+
+  // Atualizações por conversationUpdated usando provider
+  useEffect(() => {
+    const off = hub.onConversationUpdated((p) => {
+      try {
+        const convId = typeof p?.id === 'number' ? p.id : (typeof p?.id === 'string' ? Number(p.id) : undefined);
+        const newState = typeof p?.state === 'string' ? p.state : undefined;
+        if (convId === undefined || Number.isNaN(convId)) return;
+        setMessages(curr => curr.map(m => (m.conversationId === convId ? { ...m, state: newState ?? m.state } : m)));
+      } catch {}
+    });
+    return () => { off(); };
+  }, [hub]);
+
+  // Entrar/sair dos grupos conforme itens visíveis (ref-count via provider)
+  useEffect(() => {
+    let cancelled = false;
+    const visibleConvIds = new Set<number>(messages.map(m => m.conversationId));
+    const currentJoined = new Set<number>(joinedConvIdsRef.current); // snapshot
+
+    (async () => {
+      for (const id of visibleConvIds) {
+        if (cancelled) break;
+        if (!currentJoined.has(id)) {
+          try { await hub.joinConversation(String(id)); currentJoined.add(id); } catch {}
+        }
+      }
+      for (const id of Array.from(currentJoined)) {
+        if (cancelled) break;
+        if (!visibleConvIds.has(id)) {
+          try { await hub.leaveConversation(String(id)); } catch {}
+          currentJoined.delete(id);
+        }
+      }
+      if (!cancelled) {
+        joinedConvIdsRef.current = currentJoined;
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [messages, hub]);
+
+  // Ao desmontar, sair de todos os grupos (provider mantém conexão)
+  useEffect(() => {
+    return () => {
+      const snapshot = new Set<number>(joinedConvIdsRef.current);
+      (async () => { for (const id of Array.from(snapshot)) { try { await hub.leaveConversation(String(id)); } catch {} } })();
+      try { joinedConvIdsRef.current.clear(); } catch {}
+    };
+  }, [hub]);
+
   const totalPages = total ? Math.ceil(total / pageSize) : 0;
 
   function mapState(state?: string) {
     switch ((state || '').toLowerCase()) {
+      case 'sent': return 'Enviado';
       case 'read': return 'Lida';
       case 'delivered': return 'Entregue';
       case 'failed': return 'Não entregue';
@@ -130,7 +193,6 @@ export default function MessagesTable() {
       if (rest.length === 9) return `55 ${ddd} ${rest.slice(0, 5)}-${rest.slice(5)}`;
       return `55 ${ddd} ${rest}`;
     }
-    // fallback genérico
     if (d.length === 10) return `${d.slice(0, 2)} ${d.slice(2, 6)}-${d.slice(6)}`;
     if (d.length === 11) return `${d.slice(0, 2)} ${d.slice(2, 7)}-${d.slice(7)}`;
     return d;
@@ -162,6 +224,7 @@ export default function MessagesTable() {
           <select className="w-40 h-9 border rounded-md px-2" value={filterStatus || 'all'} onChange={(e)=>{setPage(0); setFilterStatus(e.target.value === 'all' ? '' : e.target.value)}}>
             <option value="all">Todos</option>
             <option value="initial">Enviando</option>
+            <option value="sent">Enviado</option>
             <option value="delivered">Entregue</option>
             <option value="read">Lida</option>
             <option value="failed">Não entregue</option>
@@ -208,17 +271,26 @@ export default function MessagesTable() {
                 key={m.id}
                 className="border-b cursor-pointer hover:bg-gray-50"
                 onDoubleClick={() => openConversationsModal(m.phone)}
+                title="Duplo clique: abrir chat (modal)."
               >
                 <td className="px-4 py-2 font-mono">{m.id}</td>
                 <td className="px-4 py-2">{m.codCli ?? '-'}</td>
                 <td className="px-4 py-2 break-all max-w-[500px]">{m.content}</td>
-                <td className="px-4 py-2">{formatPhone(m.phone)}</td>
-                <td className="px-4 py-2"><span className={`inline-block px-2 py-0.5 rounded text-xs ${
-                  ((m.state||'').toLowerCase()==='delivered')? 'bg-green-500 text-white':
-                  ((m.state||'').toLowerCase()==='read')? 'bg-yellow-400 text-black':
-                  ((m.state||'').toLowerCase()==='initial')? 'bg-blue-500 text-white':
-                  ((m.state||'').toLowerCase()==='failed')? 'bg-red-500 text-white':'bg-gray-200 text-gray-700'
-                }`}>{mapState(m.state)}</span></td>
+                <td className="px-4 py-2">
+                  <div className="flex items-center gap-2">
+                    <span>{formatPhone(m.phone)}</span>
+                    {/* removido botão de abrir página */}
+                  </div>
+                </td>
+                <td className="px-4 py-2">{
+                  <span className={`inline-block px-2 py-0.5 rounded text-xs ${
+                    ((m.state||'').toLowerCase()==='sent')? 'bg-gray-300 text-gray-800':
+                    ((m.state||'').toLowerCase()==='delivered')? 'bg-green-500 text-white':
+                    ((m.state||'').toLowerCase()==='read')? 'bg-yellow-400 text-black':
+                    ((m.state||'').toLowerCase()==='initial')? 'bg-blue-500 text-white':
+                    ((m.state||'').toLowerCase()==='failed')? 'bg-red-500 text-white':'bg-gray-200 text-gray-700'
+                  }`}>{mapState(m.state)}</span>
+                }</td>
                 <td className="px-4 py-2">{new Date(m.createdAt).toLocaleString()}</td>
               </tr>
             ))}
@@ -230,7 +302,7 @@ export default function MessagesTable() {
           </tbody>
         </table>
       )}
-      <div className="flex justify-between items-center pt-2 gap-4 flex-wrap">
+      <div className="flex justify_between items-center pt-2 gap-4 flex-wrap">
         <button type="button" className="px-3 py-1.5 border rounded-md text-sm disabled:opacity-50" disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>Anterior</button>
         <span>
           Página {page + 1} {totalPages ? `de ${totalPages}` : ""}
