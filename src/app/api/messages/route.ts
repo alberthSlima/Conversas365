@@ -48,8 +48,7 @@ export async function GET(req: Request) {
   }
 
   try {
-    const apiRoot = baseUrl; // usar exatamente a variável de ambiente
-    let url = `${apiRoot}/Offers/Messages?${backendParams.toString()}`;
+    let url = `${baseUrl}/offers/Messages?${backendParams.toString()}`;
     type RequestInitWithDispatcher = RequestInit & { dispatcher?: Dispatcher };
     const fetchOptions: RequestInitWithDispatcher = { headers, cache: 'no-store' };
     try {
@@ -64,7 +63,7 @@ export async function GET(req: Request) {
     let res = await fetch(url, fetchOptions);
     if (!res.ok && (res.status === 404 || res.status === 405)) {
       // Fallback para backends que usam /Messages sem o prefixo Offers
-      url = `${apiRoot}/Messages?${backendParams.toString()}`;
+      url = `${baseUrl}/messages?${backendParams.toString()}`;
       res = await fetch(url, fetchOptions);
     }
     if (!res.ok) {

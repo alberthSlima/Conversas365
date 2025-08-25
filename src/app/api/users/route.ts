@@ -33,7 +33,7 @@ export async function GET(req: Request) {
     headers['Authorization'] = token.replace(/^Basic%20/i, 'Basic ');
   }
 
-  const url = `${base}/Users`;
+  const url = `${base}/users`;
   type RequestInitWithDispatcher = RequestInit & { dispatcher?: Dispatcher };
   const fetchOptions: RequestInitWithDispatcher = { headers, cache: 'no-store' };
   try {
@@ -68,7 +68,7 @@ export async function POST(req: Request) {
   type RequestInitWithDispatcher = RequestInit & { dispatcher?: Dispatcher };
   const fetchOptions: RequestInitWithDispatcher = { method: 'POST', headers, body: JSON.stringify(body) };
   try {
-    const target = new URL(`${base}/Users`);
+    const target = new URL(`${base}/users`);
     const allowInsecure = (process.env.ALLOW_INSECURE_TLS === 'true');
     if (allowInsecure && target.protocol === 'https:') {
       const undici = await import('undici');

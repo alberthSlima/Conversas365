@@ -16,7 +16,7 @@ export async function GET(req: Request) {
   type RequestInitWithDispatcher = RequestInit & { dispatcher?: Dispatcher };
   const fetchOptions: RequestInitWithDispatcher = { headers, cache: 'no-store' };
   try {
-    const target = new URL(`${base}/Users/${encodeURIComponent(username)}`);
+    const target = new URL(`${base}/users/${encodeURIComponent(username)}`);
     const allowInsecure = (process.env.ALLOW_INSECURE_TLS === 'true');
     if (allowInsecure && target.protocol === 'https:') {
       const undici = await import('undici');
@@ -50,7 +50,7 @@ export async function PUT(req: Request) {
   type RequestInitWithDispatcher2 = RequestInit & { dispatcher?: Dispatcher };
   const fetchOptions2: RequestInitWithDispatcher2 = { method: 'PUT', headers, body: JSON.stringify(body) };
   try {
-    const target = new URL(`${base}/Users/${encodeURIComponent(idOrUsername)}`);
+    const target = new URL(`${base}/users/${encodeURIComponent(idOrUsername)}`);
     const allowInsecure = (process.env.ALLOW_INSECURE_TLS === 'true');
     if (allowInsecure && target.protocol === 'https:') {
       const undici = await import('undici');

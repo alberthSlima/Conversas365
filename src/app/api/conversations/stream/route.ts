@@ -54,16 +54,15 @@ export async function GET(req: NextRequest) {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
       }
 
-      const normalizedBase = baseUrl.replace(/\/+$/, '');
-      const apiRoot = normalizedBase.endsWith('/api/v1') ? normalizedBase : `${normalizedBase}/api/v1`;
-      let url = `${apiRoot}/Offers/Conversations?phone=${encodeURIComponent(phoneParam)}`;
+     
+      let url = `${baseUrl}/offers/Conversations?phone=${encodeURIComponent(phoneParam)}`;
 
       async function tick() {
         if (closed) return;
         try {
           let res = await fetch(url, { headers, cache: 'no-store' });
           if (!res.ok && (res.status === 404 || res.status === 405)) {
-            url = `${apiRoot}/Conversations?phone=${encodeURIComponent(phoneParam)}`;
+            url = `${baseUrl}/conversations?phone=${encodeURIComponent(phoneParam)}`;
             res = await fetch(url, { headers, cache: 'no-store' });
           }
           const raw: unknown = await res.json().catch(() => ([]));
