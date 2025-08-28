@@ -6,15 +6,15 @@ import { Check, CheckCheck, Clock, XCircle } from 'lucide-react';
 import { useHub } from '@/components/HubProvider';
 
 type Row = {
-  conversationId: number;
+  id: number;
   state?: string;
   initiatedBy?: string;
-  content: string;
-  messageCreatedAt: string;
-  origin?: string | null;
-  convCreatedAt?: string;
-  convUpdatedAt?: string;
+  context?: string;
+  createdAt: string;
+  updatedAt?: string;
 };
+
+type ParsedMessage = { text: string; buttons: string[] };
 
 type ConversationCreatedPayload = {
   id?: number | string;
@@ -53,7 +53,7 @@ export function ConversationsChat({ phone, onClose, mode = 'modal' }: { phone: s
   function computeSignature(list: Row[]): string {
     if (list.length === 0) return "0";
     const last = list[list.length - 1];
-    return `${list.length}:${last.conversationId}:${last.messageCreatedAt}`;
+    return `${list.length}:${last.id}:${last.createdAt}`;
   }
 
   useEffect(() => { rowsRef.current = rows; }, [rows]);
@@ -65,7 +65,7 @@ export function ConversationsChat({ phone, onClose, mode = 'modal' }: { phone: s
         const idNum: number | undefined = typeof p?.id === 'number' ? p.id : (typeof p?.id === 'string' ? Number(p.id) : undefined);
         const newState = typeof p?.state === 'string' ? p.state.toLowerCase() : undefined;
         if (idNum === undefined || Number.isNaN(idNum) || !newState) return;
-        setRows((curr) => curr.map((r) => (r.conversationId === idNum ? { ...r, state: newState } : r)));
+        setRows((curr) => curr.map((r) => (r.id === idNum ? { ...r, state: newState } : r)));
       } catch {}
     });
     const offCreated = hub.onConversationCreated((raw) => {
@@ -83,23 +83,21 @@ export function ConversationsChat({ phone, onClose, mode = 'modal' }: { phone: s
         const contactWa = value?.contacts && Array.isArray(value.contacts) ? value.contacts[0]?.wa_id : undefined;
         const from = typeof msg0?.from === 'string' ? msg0.from : (typeof contactWa === 'string' ? contactWa : undefined);
         if (from && phone && String(from) !== String(phone)) return;
-        const content: string = (msg0?.text?.body && typeof msg0.text.body === 'string' && msg0.text.body.trim().length > 0)
-          ? msg0.text.body
-          : (typeof msg0?.type === 'string' ? `[${msg0.type}]` : '[mensagem]');
+        const ctxRaw: string = (msg0?.text?.body && typeof msg0.text.body === 'string' && msg0.text.body.trim().length > 0)
+          ? JSON.stringify({ entry: [{ changes: [{ value: { messages: [{ type: 'text', text: { body: msg0.text.body } }] } }] }] })
+          : JSON.stringify({ entry: [{ changes: [{ value: { messages: [{ type: msg0?.type ?? 'msg' }] } }] }] });
         const tsStr: string | undefined = typeof msg0?.timestamp === 'string' ? msg0.timestamp : undefined;
         const tsMs = tsStr && /^\d+$/.test(tsStr) ? Number(tsStr) * 1000 : Date.now();
+        const createdAtIso = new Date(tsMs).toISOString();
         const newItem: Row = {
-          conversationId: idNum,
+          id: idNum,
           state: newState,
           initiatedBy: 'CLIENT',
-          content,
-          messageCreatedAt: new Date(tsMs).toISOString(),
-          origin: null,
-          convCreatedAt: undefined,
-          convUpdatedAt: undefined,
+          context: ctxRaw,
+          createdAt: createdAtIso,
         };
         setRows((curr) => {
-          const exists = curr.some(r => r.conversationId === newItem.conversationId && r.messageCreatedAt === newItem.messageCreatedAt && r.content === newItem.content);
+          const exists = curr.some(r => r.id === newItem.id && r.createdAt === newItem.createdAt && r.context === newItem.context);
           if (exists) return curr;
           return [...curr, newItem];
         });
@@ -137,7 +135,7 @@ export function ConversationsChat({ phone, onClose, mode = 'modal' }: { phone: s
 
   // Entrar/sair nos grupos de conversa dos itens visíveis (ref-count provider)
   useEffect(() => {
-    const visibleConvIds = new Set<number>(rows.map(r => r.conversationId));
+    const visibleConvIds = new Set<number>(rows.map(r => r.id));
     let cancelled = false;
     (async () => {
       for (const id of visibleConvIds) {
@@ -165,18 +163,18 @@ export function ConversationsChat({ phone, onClose, mode = 'modal' }: { phone: s
   const groups = useMemo(() => {
     const map = new Map<number, Row[]>();
     for (const r of rows) {
-      const list = map.get(r.conversationId) || [];
+      const list = map.get(r.id) || [];
       list.push(r);
-      map.set(r.conversationId, list);
+      map.set(r.id, list);
     }
     const arr = Array.from(map.entries()).map(([id, items]) => ({
       id,
-      items: items.sort((a, b) => new Date(a.messageCreatedAt).getTime() - new Date(b.messageCreatedAt).getTime()),
+      items: items.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()),
     }));
     function lastMessageTime(items: Row[]): number {
       if (items.length === 0) return 0;
       const last = items[items.length - 1];
-      const t = Date.parse(last.messageCreatedAt);
+      const t = Date.parse(last.createdAt);
       return Number.isFinite(t) ? t : 0;
     }
     // Ordena pela data da última mensagem de cada conversa (ascendente)
@@ -206,10 +204,23 @@ export function ConversationsChat({ phone, onClose, mode = 'modal' }: { phone: s
               <div key={g.id} className="rounded-lg">
                 <div className="p-3 space-y-2">
                   {g.items.map(item => (
-                    <div key={`${item.conversationId}-${item.messageCreatedAt}`} className={`flex ${item.initiatedBy === 'SYSTEM' ? 'justify-end' : 'justify-start'}`}>
+                    <div key={`${item.id}-${item.createdAt}`} className={`flex ${item.initiatedBy === 'SYSTEM' ? 'justify-end' : 'justify-start'}`}>
                       <div className={`max-w-[75%] rounded-md px-3 py-2 text-sm ${item.initiatedBy === 'SYSTEM' ? 'bg-blue-50 border border-blue-200' : 'bg-green-50 border border-green-200'}`}>
-                        <div className="text-xs text-gray-500 mb-1">{new Date(item.messageCreatedAt).toLocaleString()}</div>
-                        <div className="whitespace-pre-wrap break-words">{item.content}</div>
+                        <div className="text-xs text-gray-500 mb-1">{new Date(item.createdAt).toLocaleString()}</div>
+                        {(() => { const pm = parseMessage(item.context); return (
+                          <>
+                            <div className="whitespace-pre-wrap break-words" dangerouslySetInnerHTML={{ __html: formatWhatsapp(pm.text).replace(/\n/g,'<br/>') }} />
+                            {pm.buttons.length > 0 && (
+                              <div className="mt-3 flex flex-col items-center gap-2">
+                                {pm.buttons.map((b: string, i: number)=>(
+                                  <button key={i} type="button" className="w-full max-w-xs text-center px-4 py-2 bg-white border rounded-md text-sm font-medium shadow-sm hover:bg-gray-100 active:scale-95 transition-transform">
+                                    {b}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </>
+                        ); })()}
                         {item.initiatedBy === 'SYSTEM' && (
                           <div className="mt-1 text-xs flex items-center justify-end gap-1">
                             {renderTicks(item.state)}
@@ -238,4 +249,67 @@ function renderTicks(state?: string) {
   return <Clock className="w-4 h-4 text-gray-300" />;
 }
 
+function parseContext(raw?: string): string {
+  if (!raw || !raw.trim().startsWith('{')) return raw || '';
+  try {
+    type WaMsg = { type?: string; text?: { body?: string }; button?: { text?: string } };
+    type WaChange = { value?: { messages?: WaMsg[] } };
+    const obj = JSON.parse(raw) as { entry?: Array<{ changes?: WaChange[] }> };
+    const msg0: WaMsg | undefined = obj.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+    if (msg0) {
+      if (msg0.text && typeof msg0.text.body === 'string' && msg0.text.body.trim().length > 0) return msg0.text.body;
+      if (msg0.type === 'button' && msg0.button?.text) {
+        return msg0.button.text;
+      }
+      if (typeof msg0.type === 'string') return `[${msg0.type}]`;
+    }
+  } catch {}
+  // formato sem entry/changes (webhook simplificado)
+  try {
+    type Msg = { type?: string; text?: { body?: string }; button?: { text?: string } };
+    const obj3 = JSON.parse(raw) as { messages?: Msg[] };
+    const msg = obj3.messages?.[0];
+    if (msg) {
+      if (msg.text?.body) return msg.text.body;
+      if (msg.button?.text) return msg.button.text;
+      if (msg.type) return `[${msg.type}]`;
+    }
+  } catch {}
+  // tentar HSM Components
+  try {
+    const obj = JSON.parse(raw) as { Components?: Array<{ Text?: string; Type?: string }> };
+    if (Array.isArray(obj?.Components)) {
+      const body = obj.Components.find(c => (c.Type || '').toLowerCase() === 'body');
+      if (body?.Text) return body.Text;
+    }
+  } catch {}
+  return raw || '';
+}
 
+// Mensagens podem vir como HSM (Components) ou envelope padrão
+function parseMessage(raw?: string): ParsedMessage {
+  if (!raw) return { text: '', buttons: [] };
+  // tentar Components
+  try {
+    const obj = JSON.parse(raw) as { Components?: Array<{ Text?: string; Type?: string; SubType?: string }> };
+    if (Array.isArray(obj?.Components)) {
+      const body = obj.Components.find(c => (c.Type || '').toLowerCase() === 'body');
+      const buttons = obj.Components.filter(c => (c.SubType || '').toUpperCase() === 'QUICK_REPLY').map(c => c.Text || '').filter(Boolean);
+      return { text: body?.Text || '', buttons };
+    }
+  } catch {}
+  // fallback envelope
+  return { text: parseContext(raw), buttons: [] };
+}
+
+function escapeHtml(str: string): string {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function formatWhatsapp(text: string): string {
+  const esc = escapeHtml(text);
+  // bold *text*
+  const bolded = esc.replace(/\*(\S[^*]*?)\*/g, '<strong>$1</strong>');
+  // italic _text_
+  return bolded.replace(/_(\S[^_]*?)_/g, '<em>$1</em>');
+}

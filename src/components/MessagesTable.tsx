@@ -244,8 +244,9 @@ export default function MessagesTable() {
             <option value="all">Todas as origens</option>
             <option value="Oferta">Oferta</option>
             <option value="Nps">Nps</option>
-            <option value="Pedido">Pedido</option>
-            <option value="Corte">Corte</option>
+            <option value="Pedido - Confirmado">Pedido Confirmado</option>
+            <option value="Pedido - Trânsito">Pedido Em Trânsito</option>
+            <option value="Pedido - Separação">Pedido Em Separação</option>
           </select>
         </div>
         <div className="w-44">
