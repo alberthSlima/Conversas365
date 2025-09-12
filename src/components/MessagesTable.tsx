@@ -255,7 +255,8 @@ export default function MessagesTable() {
       </div>
       {loading && <p>Carregando...</p>}
       {!loading && (
-        <table className="min-w-full text-sm text-left text-gray-600">
+        <div className="w-full overflow-x-auto">
+        <table className="min-w-[900px] w-full text-sm text-left text-gray-600">
           <thead className="bg-gray-100 text-xs uppercase font-medium">
             <tr>
               <th className="px-4 py-2">ID</th>
@@ -276,7 +277,7 @@ export default function MessagesTable() {
               >
                 <td className="px-4 py-2 font-mono">{m.id}</td>
                 <td className="px-4 py-2">{m.codCli ?? '-'}</td>
-                <td className="px-4 py-2 break-all max-w-[500px]">{m.content}</td>
+                <td className="px-4 py-2 break-words max-w-prose whitespace-pre-wrap">{m.content}</td>
                 <td className="px-4 py-2">
                   <div className="flex items-center gap-2">
                     <span>{formatPhone(m.phone)}</span>
@@ -302,6 +303,7 @@ export default function MessagesTable() {
             )}
           </tbody>
         </table>
+        </div>
       )}
       <div className="flex justify_between items-center pt-2 gap-4 flex-wrap">
         <button type="button" className="px-3 py-1.5 border rounded-md text-sm disabled:opacity-50" disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>Anterior</button>
