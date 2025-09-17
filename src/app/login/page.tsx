@@ -53,8 +53,7 @@ export default function LoginPage() {
             width={64}
             height={64}
             className="mb-2"
-            priority
-          />
+            priority/>
           <h1 className="text-2xl font-semibold text-gray-900 font-sans">Conversas 365</h1>
         </div>
         <div className="p-6">
