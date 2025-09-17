@@ -198,6 +198,12 @@ export default function MessagesTable() {
     return d;
   }
 
+  function preview(text: string, maxChars = 160): string {
+    const normalized = (text || '').replace(/\s+/g, ' ').trim();
+    if (normalized.length <= maxChars) return normalized;
+    return normalized.slice(0, Math.max(0, maxChars - 1)) + '…';
+  }
+
   return (
     <div className="space-y-4">
       {/* Filtros acima da tabela */}
@@ -224,6 +230,7 @@ export default function MessagesTable() {
           <select className="w-40 h-9 border rounded-md px-2" value={filterStatus || 'all'} onChange={(e)=>{setPage(0); setFilterStatus(e.target.value === 'all' ? '' : e.target.value)}}>
             <option value="all">Todos</option>
             <option value="initial">Enviando</option>
+            <option value="received">Recebido</option>
             <option value="sent">Enviado</option>
             <option value="delivered">Entregue</option>
             <option value="read">Lida</option>
@@ -277,7 +284,9 @@ export default function MessagesTable() {
               >
                 <td className="px-4 py-2 font-mono">{m.id}</td>
                 <td className="px-4 py-2">{m.codCli ?? '-'}</td>
-                <td className="px-4 py-2 break-words max-w-prose whitespace-pre-wrap">{m.content}</td>
+                <td className="px-4 py-2 break-words max-w-prose whitespace-normal">
+                  <span title={m.content}>{preview(m.content)}</span>
+                </td>
                 <td className="px-4 py-2">
                   <div className="flex items-center gap-2">
                     <span>{formatPhone(m.phone)}</span>

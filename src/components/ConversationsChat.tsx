@@ -199,21 +199,21 @@ export function ConversationsChat({ phone, onClose, mode = 'modal' }: { phone: s
         {loading && <div className="p-4">Carregando...</div>}
 
         {!loading && (
-          <div ref={listRef} className="flex-1 overflow-auto p-4 space-y-6">
+          <div ref={listRef} className="flex-1 overflow-auto p-2 space-y-3">
             {groups.map(g => (
               <div key={g.id} className="rounded-lg">
-                <div className="p-3 space-y-2">
+                <div className="p-1.5 space-y-1">
                   {g.items.map(item => (
                     <div key={`${item.id}-${item.createdAt}`} className={`flex ${item.initiatedBy === 'SYSTEM' ? 'justify-end' : 'justify-start'}`}>
-                      <div className={`max-w-[75%] rounded-md px-3 py-2 text-sm ${item.initiatedBy === 'SYSTEM' ? 'bg-blue-50 border border-blue-200' : 'bg-green-50 border border-green-200'}`}>
-                        <div className="text-xs text-gray-500 mb-1">{new Date(item.createdAt).toLocaleString()}</div>
+                      <div className={`max-w-[60%] rounded-md px-2 py-1 text-[12px] leading-4 ${item.initiatedBy === 'SYSTEM' ? 'bg-blue-50 border border-blue-100' : 'bg-green-50 border border-green-100'}`}>
+                        <div className="text-[10px] text-gray-500 mb-0.5">{new Date(item.createdAt).toLocaleString()}</div>
                         {(() => { const pm = parseMessage(item.context); return (
                           <>
-                            <div className="whitespace-pre-wrap break-words" dangerouslySetInnerHTML={{ __html: formatWhatsapp(pm.text).replace(/\n/g,'<br/>') }} />
+                            <div className="whitespace-normal break-words text-[12px] leading-4" dangerouslySetInnerHTML={{ __html: formatWhatsapp(pm.text).replace(/\n/g,'<br/>') }} />
                             {pm.buttons.length > 0 && (
-                              <div className="mt-3 flex flex-col items-center gap-2">
+                              <div className="mt-1.5 flex flex-col items-center gap-1">
                                 {pm.buttons.map((b: string, i: number)=>(
-                                  <button key={i} type="button" className="w-full max-w-xs text-center px-4 py-2 bg-white border rounded-md text-sm font-medium shadow-sm hover:bg-gray-100 active:scale-95 transition-transform">
+                                  <button key={i} type="button" className="w-full max-w-[200px] text-center px-2.5 py-1 bg-white border rounded-md text-[12px] font-medium shadow-sm hover:bg-gray-100 active:scale-[0.98] transition-transform">
                                     {b}
                                   </button>
                                 ))}
@@ -222,7 +222,7 @@ export function ConversationsChat({ phone, onClose, mode = 'modal' }: { phone: s
                           </>
                         ); })()}
                         {item.initiatedBy === 'SYSTEM' && (
-                          <div className="mt-1 text-xs flex items-center justify-end gap-1">
+                          <div className="mt-0.5 text-[10px] flex items-center justify-end gap-1">
                             {renderTicks(item.state)}
                           </div>
                         )}
@@ -307,9 +307,11 @@ function escapeHtml(str: string): string {
 }
 
 function formatWhatsapp(text: string): string {
-  const esc = escapeHtml(text);
+  const normalized = (text || '').replace(/\r\n/g, '\n').replace(/\n{2,}/g, '\n');
+  const esc = escapeHtml(normalized);
   // bold *text*
   const bolded = esc.replace(/\*(\S[^*]*?)\*/g, '<strong>$1</strong>');
   // italic _text_
-  return bolded.replace(/_(\S[^_]*?)_/g, '<em>$1</em>');
+  const it = bolded.replace(/_(\S[^_]*?)_/g, '<em>$1</em>');
+  return it;
 }
