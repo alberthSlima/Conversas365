@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { Check, CheckCheck, Clock, XCircle } from 'lucide-react';
 import { useHub } from '@/components/HubProvider';
+import { parseContextText, parseContextButtons } from '@/lib/dto';
 
 type Row = {
   id: number;
@@ -74,25 +75,46 @@ export function ConversationsChat({ phone, onClose, mode = 'modal' }: { phone: s
         const idRaw = payload?.id;
         const idNum: number | undefined = typeof idRaw === 'number' ? idRaw : (typeof idRaw === 'string' ? Number(idRaw) : undefined);
         if (idNum === undefined || Number.isNaN(idNum)) return;
+        const anyPayload = raw as unknown as Record<string, unknown>;
         const newState: string | undefined = typeof payload?.state === 'string' ? payload.state.toLowerCase() : undefined;
-        let parsed: WhatsappEnvelope | undefined;
-        try { parsed = typeof payload?.json === 'string' ? (JSON.parse(payload.json) as WhatsappEnvelope) : undefined; } catch {}
-        const entry = Array.isArray(parsed?.entry) ? parsed!.entry![0] : undefined;
-        const value = entry?.changes && Array.isArray(entry.changes) ? entry.changes[0]?.value : undefined;
-        const msg0 = value?.messages && Array.isArray(value.messages) ? value.messages[0] : undefined;
-        const contactWa = value?.contacts && Array.isArray(value.contacts) ? value.contacts[0]?.wa_id : undefined;
-        const from = typeof msg0?.from === 'string' ? msg0.from : (typeof contactWa === 'string' ? contactWa : undefined);
-        if (from && phone && String(from) !== String(phone)) return;
-        const ctxRaw: string = (msg0?.text?.body && typeof msg0.text.body === 'string' && msg0.text.body.trim().length > 0)
-          ? JSON.stringify({ entry: [{ changes: [{ value: { messages: [{ type: 'text', text: { body: msg0.text.body } }] } }] }] })
-          : JSON.stringify({ entry: [{ changes: [{ value: { messages: [{ type: msg0?.type ?? 'msg' }] } }] }] });
-        const tsStr: string | undefined = typeof msg0?.timestamp === 'string' ? msg0.timestamp : undefined;
-        const tsMs = tsStr && /^\d+$/.test(tsStr) ? Number(tsStr) * 1000 : Date.now();
-        const createdAtIso = new Date(tsMs).toISOString();
+        const ctxFromPayload: string | undefined = typeof anyPayload?.context === 'string' ? (anyPayload.context as string) : undefined;
+        const createdAtFromPayload: string | undefined = typeof anyPayload?.createdAt === 'string' ? (anyPayload.createdAt as string) : undefined;
+        const initiatedByFromPayload: string | undefined = typeof anyPayload?.initiatedBy === 'string' ? (anyPayload.initiatedBy as string) : undefined;
+        let ctxRaw: string | undefined = ctxFromPayload;
+        let createdAtIso: string | undefined = createdAtFromPayload;
+        if (!ctxRaw || !createdAtIso) {
+          // fallback: tentar interpretar payload.json no formato antigo
+          let parsed: WhatsappEnvelope | undefined;
+          try {
+            const legacyJsonRaw = (anyPayload as Record<string, unknown>)['json'];
+            if (typeof legacyJsonRaw === 'string') {
+              parsed = JSON.parse(legacyJsonRaw) as WhatsappEnvelope;
+            } else {
+              parsed = undefined;
+            }
+          } catch {}
+          const entry = Array.isArray(parsed?.entry) ? parsed!.entry![0] : undefined;
+          const value = entry?.changes && Array.isArray(entry.changes) ? entry.changes[0]?.value : undefined;
+          const msg0 = value?.messages && Array.isArray(value.messages) ? value.messages[0] : undefined;
+          if (!ctxRaw) {
+            if (msg0?.text?.body && typeof msg0.text.body === 'string' && msg0.text.body.trim().length > 0) {
+              ctxRaw = JSON.stringify({ entry: [{ changes: [{ value: { messages: [{ type: 'text', text: { body: msg0.text.body } }] } }] }] });
+            } else {
+              ctxRaw = JSON.stringify({ entry: [{ changes: [{ value: { messages: [{ type: msg0?.type ?? 'msg' }] } }] }] });
+            }
+          }
+          if (!createdAtIso) {
+            const tsStr: string | undefined = typeof msg0?.timestamp === 'string' ? msg0.timestamp : undefined;
+            const tsMs = tsStr && /^\d+$/.test(tsStr) ? Number(tsStr) * 1000 : Date.now();
+            createdAtIso = new Date(tsMs).toISOString();
+          }
+        }
+        if (!ctxRaw) ctxRaw = '';
+        if (!createdAtIso) createdAtIso = new Date().toISOString();
         const newItem: Row = {
           id: idNum,
           state: newState,
-          initiatedBy: 'CLIENT',
+          initiatedBy: initiatedByFromPayload || 'CLIENT',
           context: ctxRaw,
           createdAt: createdAtIso,
         };
@@ -107,6 +129,48 @@ export function ConversationsChat({ phone, onClose, mode = 'modal' }: { phone: s
     return () => { offUpdated(); offCreated(); };
   }, [hub, phone]);
 
+  // Fallback em SSE para contornar falhas do Hub/CORS e manter o chat atualizado
+  useEffect(() => {
+    let closed = false;
+    try {
+      const url = `/api/conversations/stream?phone=${encodeURIComponent(phone)}`;
+      const es = new EventSource(url);
+      es.onmessage = (ev: MessageEvent<string>) => {
+        try {
+          const parsed = JSON.parse(ev.data) as { type?: string; data?: Array<Partial<Row>> };
+          console.debug('[SSE] /api/conversations/stream event:', parsed);
+          if (parsed && parsed.type === 'conversations' && Array.isArray(parsed.data)) {
+            // Normalizar para Row[]
+            const incoming: Row[] = parsed.data.map((r) => ({
+              id: Number(r.id) || 0,
+              state: typeof r.state === 'string' ? r.state : undefined,
+              initiatedBy: typeof r.initiatedBy === 'string' ? r.initiatedBy : undefined,
+              context: typeof r.context === 'string' ? r.context : undefined,
+              createdAt: typeof r.createdAt === 'string' ? r.createdAt : new Date().toISOString(),
+              updatedAt: typeof r.updatedAt === 'string' ? r.updatedAt : undefined,
+            }));
+            const sig = computeSignature(incoming);
+            if (!closed && sig !== lastSigRef.current) {
+              setRows(incoming);
+              lastSigRef.current = sig;
+            }
+          }
+        } catch {}
+      };
+      es.onerror = () => {
+        console.warn('[SSE] /api/conversations/stream error');
+        try { es.close(); } catch {}
+      };
+      return () => {
+        closed = true;
+        try { es.close(); } catch {}
+      };
+    } catch {
+      // ignora erros de criação do EventSource
+      return;
+    }
+  }, [phone]);
+
   // Entrar no grupo do telefone (provider) e fazer carga inicial via REST (uma vez)
   useEffect(() => {
     const cancelled = false;
@@ -117,6 +181,7 @@ export function ConversationsChat({ phone, onClose, mode = 'modal' }: { phone: s
         const restUrl = `/api/conversations?phone=${encodeURIComponent(phone)}`;
         const res = await fetch(restUrl, { cache: 'no-store' });
         const { data } = await res.json();
+        console.debug('[REST] /api/conversations data:', data);
         const list: Row[] = Array.isArray(data) ? data : [];
         const sig = computeSignature(list);
         if (!cancelled && sig !== lastSigRef.current) {
@@ -200,6 +265,28 @@ export function ConversationsChat({ phone, onClose, mode = 'modal' }: { phone: s
 
         {!loading && (
           <div ref={listRef} className="flex-1 overflow-auto p-2 space-y-3">
+            {groups.length === 0 && (
+              <div className="p-6 text-sm text-gray-500">
+                Nenhuma mensagem para este número.
+                <button
+                  type="button"
+                  className="ml-3 px-2 py-1 border rounded-md hover:bg-gray-50"
+                  onClick={async () => {
+                    try {
+                      setLoading(true);
+                      const restUrl = `/api/conversations?phone=${encodeURIComponent(phone)}`;
+                      const res = await fetch(restUrl, { cache: 'no-store' });
+                      const { data } = await res.json();
+                      const list: Row[] = Array.isArray(data) ? data : [];
+                      setRows(list);
+                      lastSigRef.current = computeSignature(list);
+                    } catch {} finally { setLoading(false); }
+                  }}
+                >
+                  Recarregar
+                </button>
+              </div>
+            )}
             {groups.map(g => (
               <div key={g.id} className="rounded-lg">
                 <div className="p-1.5 space-y-1">
@@ -207,7 +294,7 @@ export function ConversationsChat({ phone, onClose, mode = 'modal' }: { phone: s
                     <div key={`${item.id}-${item.createdAt}`} className={`flex ${item.initiatedBy === 'SYSTEM' ? 'justify-end' : 'justify-start'}`}>
                       <div className={`max-w-[60%] rounded-md px-2 py-1 text-[12px] leading-4 ${item.initiatedBy === 'SYSTEM' ? 'bg-blue-50 border border-blue-100' : 'bg-green-50 border border-green-100'}`}>
                         <div className="text-[10px] text-gray-500 mb-0.5">{new Date(item.createdAt).toLocaleString()}</div>
-                        {(() => { const pm = parseMessage(item.context); return (
+                        {(() => { const pm: ParsedMessage = { text: parseContextText(item.context), buttons: parseContextButtons(item.context) }; return (
                           <>
                             <div className="whitespace-normal break-words text-[12px] leading-4" dangerouslySetInnerHTML={{ __html: formatWhatsapp(pm.text).replace(/\n/g,'<br/>') }} />
                             {pm.buttons.length > 0 && (
@@ -249,58 +336,7 @@ function renderTicks(state?: string) {
   return <Clock className="w-4 h-4 text-gray-300" />;
 }
 
-function parseContext(raw?: string): string {
-  if (!raw || !raw.trim().startsWith('{')) return raw || '';
-  try {
-    type WaMsg = { type?: string; text?: { body?: string }; button?: { text?: string } };
-    type WaChange = { value?: { messages?: WaMsg[] } };
-    const obj = JSON.parse(raw) as { entry?: Array<{ changes?: WaChange[] }> };
-    const msg0: WaMsg | undefined = obj.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-    if (msg0) {
-      if (msg0.text && typeof msg0.text.body === 'string' && msg0.text.body.trim().length > 0) return msg0.text.body;
-      if (msg0.type === 'button' && msg0.button?.text) {
-        return msg0.button.text;
-      }
-      if (typeof msg0.type === 'string') return `[${msg0.type}]`;
-    }
-  } catch {}
-  // formato sem entry/changes (webhook simplificado)
-  try {
-    type Msg = { type?: string; text?: { body?: string }; button?: { text?: string } };
-    const obj3 = JSON.parse(raw) as { messages?: Msg[] };
-    const msg = obj3.messages?.[0];
-    if (msg) {
-      if (msg.text?.body) return msg.text.body;
-      if (msg.button?.text) return msg.button.text;
-      if (msg.type) return `[${msg.type}]`;
-    }
-  } catch {}
-  // tentar HSM Components
-  try {
-    const obj = JSON.parse(raw) as { Components?: Array<{ Text?: string; Type?: string }> };
-    if (Array.isArray(obj?.Components)) {
-      const body = obj.Components.find(c => (c.Type || '').toLowerCase() === 'body');
-      if (body?.Text) return body.Text;
-    }
-  } catch {}
-  return raw || '';
-}
-
-// Mensagens podem vir como HSM (Components) ou envelope padrão
-function parseMessage(raw?: string): ParsedMessage {
-  if (!raw) return { text: '', buttons: [] };
-  // tentar Components
-  try {
-    const obj = JSON.parse(raw) as { Components?: Array<{ Text?: string; Type?: string; SubType?: string }> };
-    if (Array.isArray(obj?.Components)) {
-      const body = obj.Components.find(c => (c.Type || '').toLowerCase() === 'body');
-      const buttons = obj.Components.filter(c => (c.SubType || '').toUpperCase() === 'QUICK_REPLY').map(c => c.Text || '').filter(Boolean);
-      return { text: body?.Text || '', buttons };
-    }
-  } catch {}
-  // fallback envelope
-  return { text: parseContext(raw), buttons: [] };
-}
+// parsing movido para '@/lib/dto'
 
 function escapeHtml(str: string): string {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');

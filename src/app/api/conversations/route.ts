@@ -25,7 +25,8 @@ export async function GET(req: Request) {
 
   try {
     const apiRoot = baseUrl; // usar exatamente a variável de ambiente
-    let url = `${apiRoot}/Offers/Conversations?phone=${encodeURIComponent(phone)}`;
+    // Novo endpoint v2: /api/v2/conversations/{phone}
+    const url = `${apiRoot}/api/v2/conversations/${encodeURIComponent(phone)}`;
     type RequestInitWithDispatcher = RequestInit & { dispatcher?: Dispatcher };
     const fetchOptions: RequestInitWithDispatcher = { headers, cache: 'no-store' };
     try {
@@ -37,12 +38,7 @@ export async function GET(req: Request) {
         fetchOptions.dispatcher = new undici.Agent({ connect: { rejectUnauthorized: false } });
       }
     } catch {}
-    let res = await fetch(url, fetchOptions);
-    if (!res.ok && (res.status === 404 || res.status === 405)) {
-      // Fallback para /Conversations sem prefixo Offers
-      url = `${apiRoot}/Conversations?phone=${encodeURIComponent(phone)}`;
-      res = await fetch(url, fetchOptions);
-    }
+    const res = await fetch(url, fetchOptions);
     const rawJson: unknown = await res.json().catch(() => ([]));
     return NextResponse.json({ data: rawJson }, { status: res.status });
   } catch (e) {

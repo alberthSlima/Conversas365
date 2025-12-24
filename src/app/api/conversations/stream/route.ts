@@ -3,31 +3,21 @@ import type { NextRequest } from 'next/server';
 export const runtime = 'nodejs';
 
 type ApiConversationItem = {
-  conversationId?: number;
   id?: number;
   state?: string;
   initiatedBy?: string;
-  messageId?: number;
-  content?: string;
-  messageCreatedAt?: string;
+  context?: string;
   createdAt?: string;
-  convUpdatedAt?: string;
-  convCreatedAt?: string;
-  origin?: string;
-  conversationCreatedAt?: string;
-  conversationUpdatedAt?: string;
+  updatedAt?: string;
 };
 
 type MappedRow = {
-  conversationId: number;
+  id: number;
   state?: string;
   initiatedBy?: string;
-  messageId: number;
-  content: string;
-  messageCreatedAt: string;
-  origin?: string | null;
-  convCreatedAt?: string;
-  convUpdatedAt?: string;
+  context?: string;
+  createdAt: string;
+  updatedAt?: string;
 };
 
 export async function GET(req: NextRequest) {
@@ -55,28 +45,21 @@ export async function GET(req: NextRequest) {
       }
 
      
-      let url = `${baseUrl}/offers/Conversations?phone=${encodeURIComponent(phoneParam)}`;
+      const url = `${baseUrl}/api/v2/conversations/${encodeURIComponent(phoneParam)}`;
 
       async function tick() {
         if (closed) return;
         try {
-          let res = await fetch(url, { headers, cache: 'no-store' });
-          if (!res.ok && (res.status === 404 || res.status === 405)) {
-            url = `${baseUrl}/conversations?phone=${encodeURIComponent(phoneParam)}`;
-            res = await fetch(url, { headers, cache: 'no-store' });
-          }
+          const res = await fetch(url, { headers, cache: 'no-store' });
           const raw: unknown = await res.json().catch(() => ([]));
           const list: ApiConversationItem[] = Array.isArray(raw) ? (raw as ApiConversationItem[]) : [];
           const mapped: MappedRow[] = list.map((item) => ({
-            conversationId: item.conversationId ?? item.id ?? 0,
+            id: item.id ?? 0,
             state: item.state ?? undefined,
             initiatedBy: item.initiatedBy ?? undefined,
-            messageId: item.messageId ?? item.id ?? 0,
-            content: item.content ?? '',
-            messageCreatedAt: item.messageCreatedAt ?? item.createdAt ?? item.convUpdatedAt ?? item.convCreatedAt ?? new Date().toISOString(),
-            origin: item.origin ?? undefined,
-            convCreatedAt: item.convCreatedAt ?? item.conversationCreatedAt ?? undefined,
-            convUpdatedAt: item.convUpdatedAt ?? item.conversationUpdatedAt ?? undefined,
+            context: item.context ?? undefined,
+            createdAt: item.createdAt ?? new Date().toISOString(),
+            updatedAt: item.updatedAt ?? undefined,
           }));
           send({ type: 'conversations', data: mapped });
         } catch {

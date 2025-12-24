@@ -23,13 +23,14 @@ export async function POST(req: Request) {
     if (!base) return NextResponse.json({ ok: false, error: 'EXTERNAL_API_BASE_URL not set' }, { status: 500 });
 
     const apiRoot = base; 
-    const url = `${apiRoot}/users/auth`;
+    // v2 endpoint
+    const url = `${apiRoot}/api/v2/users/auth`;
     type RequestInitWithDispatcher = RequestInit & { dispatcher?: Dispatcher };
     const fetchOptions: RequestInitWithDispatcher = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Accept': 'application/json',
+        'Accept': 'application/json, text/plain',
       },
       body: JSON.stringify({ username, password }),
     };

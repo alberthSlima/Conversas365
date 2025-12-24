@@ -35,7 +35,7 @@ export async function GET(req: Request) {
     if (v) backendParams.set(key, v);
   }
 
-  const headers: Record<string, string> = { 'Accept': 'application/json' };
+  const headers: Record<string, string> = { 'Accept': 'application/json, text/plain' };
   const appAuth = req.headers.get('cookie')?.split(';').map(s=>s.trim()).find(s=>s.startsWith('app_auth='))?.split('=')[1];
   if (appAuth) {
     let token = appAuth;
@@ -48,7 +48,8 @@ export async function GET(req: Request) {
   }
 
   try {
-    let url = `${baseUrl}/offers/Messages?${backendParams.toString()}`;
+    // v2 endpoint: /api/v2/messages
+    const url = `${baseUrl}/api/v2/messages?${backendParams.toString()}`;
     type RequestInitWithDispatcher = RequestInit & { dispatcher?: Dispatcher };
     const fetchOptions: RequestInitWithDispatcher = { headers, cache: 'no-store' };
     try {
@@ -60,12 +61,7 @@ export async function GET(req: Request) {
         fetchOptions.dispatcher = new undici.Agent({ connect: { rejectUnauthorized: false } });
       }
     } catch {}
-    let res = await fetch(url, fetchOptions);
-    if (!res.ok && (res.status === 404 || res.status === 405)) {
-      // Fallback para backends que usam /Messages sem o prefixo Offers
-      url = `${baseUrl}/messages?${backendParams.toString()}`;
-      res = await fetch(url, fetchOptions);
-    }
+    const res = await fetch(url, fetchOptions);
     if (!res.ok) {
       const txt = await res.text().catch(() => '');
       return new NextResponse(txt || 'Upstream error', { status: res.status });
