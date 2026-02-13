@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { requireBusinessId, graphBaseUrl, authHeaders } from '@/lib/whatsapp';
 
 type Template = {
   id: string;
@@ -14,32 +15,30 @@ type WhatsAppResponse = {
   data: Template[];
   paging?: {
     next?: string;
-    cursors?: {
-      before?: string;
-      after?: string;
-    };
+    cursors?: { before?: string; after?: string };
   };
 };
 
 export async function GET() {
-  const version = process.env.WHATSAPP_API_VERSION || 'v24.0';
-  const businessId = process.env.WHATSAPP_BUSINESS_ID;
-  const token = process.env.WHATSAPP_ACCESS_TOKEN;
-
-  if (!businessId || !token) {
-    return NextResponse.json({ error: 'WhatsApp credentials not configured' }, { status: 500 });
+  let config: ReturnType<typeof requireBusinessId>;
+  try {
+    config = requireBusinessId();
+  } catch (e) {
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : 'WhatsApp credentials not configured' },
+      { status: 500 }
+    );
   }
 
   try {
     let allTemplates: Template[] = [];
-    let nextUrl: string | undefined = `https://graph.facebook.com/${version}/${businessId}/message_templates`;
+    let nextUrl: string | undefined = `${graphBaseUrl()}/${config.businessId}/message_templates`;
 
-    // Buscar todas as páginas
     while (nextUrl) {
       const res = await fetch(nextUrl, {
         headers: {
-          'Authorization': `Bearer ${token}`,
-          'Accept': 'application/json',
+          ...authHeaders(config.token),
+          Accept: 'application/json',
         },
         cache: 'no-store',
       });

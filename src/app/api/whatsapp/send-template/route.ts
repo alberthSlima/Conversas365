@@ -1,20 +1,21 @@
 import { NextResponse } from 'next/server';
+import { requirePhoneNumberId, graphBaseUrl, authHeaders } from '@/lib/whatsapp';
 
 export async function POST(req: Request) {
-  const version = process.env.WHATSAPP_API_VERSION || 'v24.0';
-  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
-  const token = process.env.WHATSAPP_ACCESS_TOKEN;
-
-  if (!phoneNumberId || !token) {
-    return NextResponse.json({ error: 'WhatsApp credentials not configured (WHATSAPP_PHONE_NUMBER_ID and WHATSAPP_ACCESS_TOKEN required)' }, { status: 500 });
+  let config: ReturnType<typeof requirePhoneNumberId>;
+  try {
+    config = requirePhoneNumberId();
+  } catch (e) {
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : 'WhatsApp credentials not configured' },
+      { status: 500 }
+    );
   }
 
   try {
     const body = await req.json();
-    
     console.log('[API SEND] Received payload:', JSON.stringify(body, null, 2));
-    
-    // Validação básica
+
     if (!body.to || typeof body.to !== 'string') {
       return NextResponse.json({ error: 'Campo "to" é obrigatório e deve ser uma string com o número' }, { status: 400 });
     }
@@ -22,13 +23,13 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Nome do template é obrigatório' }, { status: 400 });
     }
 
-    const url = `https://graph.facebook.com/${version}/${phoneNumberId}/messages`;
+    const url = `${graphBaseUrl()}/${config.phoneNumberId}/messages`;
     console.log('[API SEND] URL:', url);
     
     const res = await fetch(url, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${token}`,
+        ...authHeaders(config.token),
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),

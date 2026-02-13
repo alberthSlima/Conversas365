@@ -1,54 +1,19 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Header from "@/components/Header";
-
-type Template = {
-  id: string;
-  name: string;
-  language: string;
-  status: string;
-  category: string;
-};
-
-type ApiResponse = {
-  data?: Template[];
-  error?: string;
-};
+import { useTemplates } from "@/application/hooks/useTemplates";
 
 export default function TemplatesPage() {
   const router = useRouter();
-  const [templates, setTemplates] = useState<Template[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { templates: domainTemplates, loading, error } = useTemplates();
   const [searchTerm, setSearchTerm] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
 
-  useEffect(() => {
-    async function fetchTemplates() {
-      try {
-        setLoading(true);
-        const res = await fetch('/api/whatsapp/templates', { cache: 'no-store' });
-        if (!res.ok) {
-          throw new Error(`Erro ao buscar templates: ${res.status}`);
-        }
-        const json: ApiResponse = await res.json();
-        if (json.error) {
-          throw new Error(json.error);
-        }
-        // Filtrar apenas aprovados
-        const approved = (json.data || []).filter(t => t.status === 'APPROVED');
-        setTemplates(approved);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'Erro desconhecido');
-      } finally {
-        setLoading(false);
-      }
-    }
-    fetchTemplates();
-  }, []);
+  // Converter Domain Entities para formato UI (mantém compatibilidade)
+  const templates = domainTemplates.map(t => t.toPrimitives());
 
   // Filtrar por nome
   const filteredTemplates = templates.filter(t => 

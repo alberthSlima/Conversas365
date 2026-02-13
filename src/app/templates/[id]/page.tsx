@@ -1,19 +1,28 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import * as XLSX from 'xlsx';
 import Header from "@/components/Header";
+
+type CarouselCardComponent = {
+  type: string;
+  format?: string;
+  example?: { header_handle?: string[] };
+  buttons?: Array<{ type: string; text: string; url?: string; example?: string[] }>;
+};
 
 type Component = {
   type: string;
   text?: string;
   format?: string;
-  buttons?: Array<{ type: string; text: string; url?: string }>;
+  buttons?: Array<{ type: string; text: string; url?: string; example?: string[] }>;
   example?: {
     body_text?: string[][];
     header_handle?: string[];
   };
+  /** Carrossel: quando type é CAROUSEL ou carousel, contém os cards */
+  cards?: Array<{ components: CarouselCardComponent[] }>;
 };
 
 type Template = {
@@ -42,6 +51,69 @@ export default function TemplateDetailsPage() {
   const [showColumnSelect, setShowColumnSelect] = useState(false);
   const [spreadsheetData, setSpreadsheetData] = useState<string[][]>([]);
   const [columns, setColumns] = useState<string[]>([]);
+  /** ID da mídia por card (header image) após upload - chave = cardIdx */
+  const [carouselHeaderImageIds, setCarouselHeaderImageIds] = useState<Record<number, string>>({});
+  /** URL de preview (blob) da imagem do card para exibir no preview em vez do ID */
+  const [carouselHeaderPreviewUrls, setCarouselHeaderPreviewUrls] = useState<Record<number, string>>({});
+  const [carouselUploadingCard, setCarouselUploadingCard] = useState<number | null>(null);
+  const [pendingCarouselUploadCard, setPendingCarouselUploadCard] = useState<number | null>(null);
+  const carouselFileInputRef = useRef<HTMLInputElement>(null);
+
+  /** Estado para preview em tempo real */
+  const [previewBodyParams, setPreviewBodyParams] = useState<string[]>([]);
+  const [previewButtonParams, setPreviewButtonParams] = useState<Record<number, string>>({});
+  const [previewCarouselPayload, setPreviewCarouselPayload] = useState<Record<string, string>>({});
+  const [previewCarouselText, setPreviewCarouselText] = useState<Record<string, string>>({});
+
+  function openCarouselFilePicker(cardIdx: number) {
+    setPendingCarouselUploadCard(cardIdx);
+    carouselFileInputRef.current?.click();
+  }
+
+  async function handleCarouselHeaderUpload(cardIdx: number, file: File) {
+    setCarouselUploadingCard(cardIdx);
+    const previewUrl = URL.createObjectURL(file);
+    setCarouselHeaderPreviewUrls((prev) => {
+      const old = prev[cardIdx];
+      if (old) URL.revokeObjectURL(old);
+      return { ...prev, [cardIdx]: previewUrl };
+    });
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('type', file.type || 'image/jpeg');
+      formData.append('messaging_product', 'whatsapp');
+      const res = await fetch('/api/whatsapp/media', { method: 'POST', body: formData });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `Erro ${res.status}`);
+      }
+      const data = await res.json();
+      if (data.id) {
+        setCarouselHeaderImageIds((prev) => ({ ...prev, [cardIdx]: data.id }));
+      }
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'Falha ao enviar imagem');
+      URL.revokeObjectURL(previewUrl);
+      setCarouselHeaderPreviewUrls((prev) => {
+        const next = { ...prev };
+        delete next[cardIdx];
+        return next;
+      });
+    } finally {
+      setCarouselUploadingCard(null);
+      setPendingCarouselUploadCard(null);
+      if (carouselFileInputRef.current) carouselFileInputRef.current.value = '';
+    }
+  }
+
+  function onCarouselFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    const cardIdx = pendingCarouselUploadCard;
+    if (file && cardIdx !== null) {
+      handleCarouselHeaderUpload(cardIdx, file);
+    }
+  }
 
   useEffect(() => {
     async function fetchTemplate() {
@@ -68,6 +140,24 @@ export default function TemplateDetailsPage() {
     }
     fetchTemplate();
   }, [templateId]);
+
+  // Inicializar preview body params quando o template carregar
+  useEffect(() => {
+    if (!template?.components) return;
+    const bodyComp = template.components.find((c) => (c.type || '').toUpperCase() === 'BODY');
+    const len = bodyComp?.example?.body_text?.[0]?.length ?? 0;
+    if (len > 0) setPreviewBodyParams((prev) => (prev.length !== len ? Array(len).fill('') : prev));
+  }, [template]);
+
+  // Limpar URLs de preview das imagens ao fechar o formulário (evita vazar memória e URLs revogadas)
+  useEffect(() => {
+    if (!showSendForm) {
+      setCarouselHeaderPreviewUrls((prev) => {
+        Object.values(prev).forEach((url) => URL.revokeObjectURL(url));
+        return {};
+      });
+    }
+  }, [showSendForm]);
 
   if (loading) {
     return (
@@ -176,24 +266,34 @@ export default function TemplateDetailsPage() {
         return;
       }
 
-      // Montar componentes com parâmetros
-      const components: Array<{
-        type: string;
-        sub_type?: string;
-        index?: number;
-        parameters: Array<{ type: string; text: string }>;
-      }> = [];
+      // Montar componentes com parâmetros (body, buttons, carousel)
+      type PayloadComponent =
+        | { type: 'body'; parameters: Array<{ type: string; text: string }> }
+        | { type: 'button'; sub_type: string; index: string; parameters: Array<{ type: string; text?: string; payload?: string }> }
+        | {
+            type: 'carousel';
+            cards: Array<{
+              card_index: number;
+              components: Array<
+                | { type: 'header'; parameters: Array<{ type: string; image?: { id?: string; link?: string } }> }
+                | { type: 'button'; sub_type: string; index: string; parameters: Array<{ type: string; text?: string; payload?: string }> }
+              >;
+            }>;
+          };
+
+      const components: PayloadComponent[] = [];
 
       template.components?.forEach((comp) => {
-        if (comp.type === 'BODY' && comp.example?.body_text && comp.example.body_text.length > 0) {
+        const compType = (comp.type || '').toUpperCase();
+        if (compType === 'BODY' && comp.example?.body_text && comp.example.body_text.length > 0) {
           const params = comp.example.body_text[0].map((_, i) => {
             const val = formData.get(`body_${i}`) as string;
             return { type: 'text', text: val || '' };
           });
           components.push({ type: 'body', parameters: params });
         }
-        
-        if (comp.type === 'BUTTONS' && comp.buttons) {
+
+        if (compType === 'BUTTONS' && comp.buttons) {
           comp.buttons.forEach((btn, btnIdx) => {
             if (btn.type === 'URL') {
               const val = formData.get(`button_${btnIdx}`) as string;
@@ -201,12 +301,67 @@ export default function TemplateDetailsPage() {
                 components.push({
                   type: 'button',
                   sub_type: 'url',
-                  index: btnIdx,
+                  index: String(btnIdx),
                   parameters: [{ type: 'text', text: val }],
                 });
               }
             }
           });
+        }
+
+        // Carrossel: cards vêm dinamicamente do JSON da API
+        if ((compType === 'CAROUSEL' || comp.type === 'carousel') && comp.cards?.length) {
+          type CarouselCardPayload = {
+            card_index: number;
+            components: Array<
+              | { type: 'header'; parameters: Array<{ type: string; image?: { id?: string; link?: string } }> }
+              | { type: 'button'; sub_type: string; index: string; parameters: Array<{ type: string; text?: string; payload?: string }> }
+            >;
+          };
+          const carouselCards: CarouselCardPayload[] = comp.cards.map((card, cardIdx) => {
+            const cardComponents: CarouselCardPayload['components'] = [];
+            card.components?.forEach((c) => {
+              const cType = (c.type || '').toLowerCase();
+              if (cType === 'header' && (c.format || '').toLowerCase() === 'image') {
+                const imageVal = (formData.get(`carousel_card_${cardIdx}_header_image`) as string)?.trim();
+                if (imageVal) {
+                  cardComponents.push({
+                    type: 'header',
+                    parameters: [{ type: 'image', image: { id: imageVal } }],
+                  });
+                }
+              }
+              if (cType === 'buttons' && c.buttons) {
+                c.buttons.forEach((btn, btnIdx) => {
+                  const btnType = (btn.type || '').toUpperCase();
+                  if (btnType === 'QUICK_REPLY') {
+                    const payload = formData.get(`carousel_card_${cardIdx}_button_${btnIdx}_payload`) as string;
+                    if (payload != null) {
+                      cardComponents.push({
+                        type: 'button',
+                        sub_type: 'quick_reply',
+                        index: String(btnIdx),
+                        parameters: [{ type: 'payload', payload: String(payload) }],
+                      });
+                    }
+                  }
+                  if (btnType === 'URL') {
+                    const text = formData.get(`carousel_card_${cardIdx}_button_${btnIdx}_text`) as string;
+                    if (text != null) {
+                      cardComponents.push({
+                        type: 'button',
+                        sub_type: 'url',
+                        index: String(btnIdx),
+                        parameters: [{ type: 'text', text: String(text) }],
+                      });
+                    }
+                  }
+                });
+              }
+            });
+            return { card_index: cardIdx, components: cardComponents };
+          });
+          components.push({ type: 'carousel', cards: carouselCards });
         }
       });
 
@@ -446,15 +601,23 @@ export default function TemplateDetailsPage() {
 
         <div className="p-6 sm:p-8">
 
-        {/* Formulário de Envio */}
-        {showSendForm && (
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              handleSendTemplate(new FormData(e.currentTarget));
-            }}
-            className="mb-8 bg-gradient-to-br from-blue-50 to-indigo-50 rounded-2xl p-6 border-2 border-blue-200 shadow-lg"
-          >
+        {/* Formulário de Envio + Preview */}
+        {showSendForm && template && (
+          <div className="mb-8 flex flex-col lg:flex-row gap-6">
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleSendTemplate(new FormData(e.currentTarget));
+              }}
+              className="flex-1 min-w-0 bg-gradient-to-br from-blue-50 to-indigo-50 rounded-2xl p-6 border-2 border-blue-200 shadow-lg"
+            >
+            <input
+              ref={carouselFileInputRef}
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              className="hidden"
+              onChange={onCarouselFileChange}
+            />
             <div className="flex items-center gap-3 mb-6">
               <div className="w-12 h-12 bg-blue-600 rounded-xl flex items-center justify-center shadow-md">
                 <svg className="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -530,6 +693,12 @@ export default function TemplateDetailsPage() {
                           name={`body_${i}`}
                           required
                           placeholder={example}
+                          value={previewBodyParams[i] ?? ''}
+                          onChange={(e) => setPreviewBodyParams((prev) => {
+                            const next = [...(prev.length ? prev : Array(comp.example!.body_text![0].length).fill(''))];
+                            next[i] = e.target.value;
+                            return next;
+                          })}
                           className="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
                         />
                       </div>
@@ -555,6 +724,8 @@ export default function TemplateDetailsPage() {
                           name={`button_${btnIdx}`}
                           required
                           placeholder="Complemento da URL"
+                          value={previewButtonParams[btnIdx] ?? ''}
+                          onChange={(e) => setPreviewButtonParams((prev) => ({ ...prev, [btnIdx]: e.target.value }))}
                           className="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
                         />
                         <p className="text-xs text-gray-500 mt-1">URL base: {btn.url}</p>
@@ -565,6 +736,112 @@ export default function TemplateDetailsPage() {
                 });
               }
               return null;
+            })}
+
+            {/* Parâmetros do Carrossel: cards dinâmicos conforme JSON da API */}
+            {template.components?.map((comp) => {
+              const isCarousel = (comp.type || '').toUpperCase() === 'CAROUSEL' || comp.type === 'carousel';
+              if (!isCarousel || !comp.cards?.length) return null;
+              return (
+                <div key="carousel-params" className="mb-4 p-4 bg-purple-50 border-2 border-purple-200 rounded-xl">
+                  <h4 className="text-sm font-semibold text-purple-900 mb-3 flex items-center gap-2">
+                    Parâmetros do Carrossel ({comp.cards.length} card(s))
+                  </h4>
+                  {comp.cards.map((card, cardIdx) => (
+                    <div key={cardIdx} className="mb-4 last:mb-0 p-3 bg-white rounded-lg border border-purple-100">
+                      <div className="text-xs font-bold text-purple-700 mb-2">Card {cardIdx + 1}</div>
+                      {card.components?.map((c) => {
+                        const cType = (c.type || '').toLowerCase();
+                        if (cType === 'header' && (c.format || '').toLowerCase() === 'image') {
+                          const mediaId = carouselHeaderImageIds[cardIdx];
+                          const isUploading = carouselUploadingCard === cardIdx;
+                          return (
+                            <div key={`card-${cardIdx}-header`} className="mb-2">
+                              <input
+                                type="hidden"
+                                name={`carousel_card_${cardIdx}_header_image`}
+                                value={mediaId ?? ''}
+                              />
+                              <label className="block text-sm mb-1">Imagem do header</label>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <button
+                                  type="button"
+                                  disabled={isUploading}
+                                  onClick={() => openCarouselFilePicker(cardIdx)}
+                                  className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border-2 border-purple-300 bg-purple-50 text-purple-800 hover:bg-purple-100 disabled:opacity-50 text-sm font-medium"
+                                >
+                                  {isUploading ? (
+                                    <>
+                                      <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                                      </svg>
+                                      Enviando...
+                                    </>
+                                  ) : mediaId ? (
+                                    <>Trocar imagem</>
+                                  ) : (
+                                    <>Enviar imagem</>
+                                  )}
+                                </button>
+                                {mediaId && (
+                                  <span className="text-xs text-gray-600 bg-gray-100 px-2 py-1 rounded">
+                                    ID: {mediaId}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        }
+                        if (cType === 'buttons' && c.buttons) {
+                          return (
+                            <div key={`card-${cardIdx}-buttons`} className="space-y-2">
+                              {c.buttons.map((btn, btnIdx) => {
+                                const btnType = (btn.type || '').toUpperCase();
+                                if (btnType === 'QUICK_REPLY') {
+                                  const key = `${cardIdx}-${btnIdx}`;
+                                  return (
+                                    <div key={btnIdx}>
+                                      <label className="block text-sm mb-1">Botão &quot;{btn.text}&quot; (payload)</label>
+                                      <input
+                                        type="text"
+                                        name={`carousel_card_${cardIdx}_button_${btnIdx}_payload`}
+                                        placeholder="Ex: more-aloes"
+                                        value={previewCarouselPayload[key] ?? ''}
+                                        onChange={(e) => setPreviewCarouselPayload((prev) => ({ ...prev, [key]: e.target.value }))}
+                                        className="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-purple-500"
+                                      />
+                                    </div>
+                                  );
+                                }
+                                if (btnType === 'URL') {
+                                  const key = `${cardIdx}-${btnIdx}`;
+                                  return (
+                                    <div key={btnIdx}>
+                                      <label className="block text-sm mb-1">Botão &quot;{btn.text}&quot; (texto do parâmetro da URL)</label>
+                                      <input
+                                        type="text"
+                                        name={`carousel_card_${cardIdx}_button_${btnIdx}_text`}
+                                        placeholder={btn.example?.[0] ?? 'Ex: blue-elf'}
+                                        value={previewCarouselText[key] ?? ''}
+                                        onChange={(e) => setPreviewCarouselText((prev) => ({ ...prev, [key]: e.target.value }))}
+                                        className="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-purple-500"
+                                      />
+                                      {btn.url && <p className="text-xs text-gray-500 mt-1">URL: {btn.url}</p>}
+                                    </div>
+                                  );
+                                }
+                                return null;
+                              })}
+                            </div>
+                          );
+                        }
+                        return null;
+                      })}
+                    </div>
+                  ))}
+                </div>
+              );
             })}
 
             <div className="flex flex-col sm:flex-row gap-3 pt-4 border-t-2 border-blue-200">
@@ -599,6 +876,80 @@ export default function TemplateDetailsPage() {
               </button>
             </div>
           </form>
+
+            {/* Preview em tempo real */}
+            <div className="w-full lg:w-[380px] flex-shrink-0">
+              <div className="sticky top-24 bg-white rounded-2xl border-2 border-gray-200 shadow-lg overflow-hidden">
+                <div className="bg-green-600 px-4 py-2 text-white text-sm font-semibold flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-white" />
+                  Preview da mensagem
+                </div>
+                <div className="p-4 space-y-3 min-h-[200px]">
+                  {/* Body */}
+                  {template.components?.map((comp) => {
+                    if ((comp.type || '').toUpperCase() !== 'BODY' || !comp.text) return null;
+                    let text = comp.text;
+                    (previewBodyParams || []).forEach((val, i) => {
+                      text = text.replace(new RegExp(`\\{\\{${i + 1}\\}\\}`, 'g'), val || `{{${i + 1}}}`);
+                    });
+                    return (
+                      <p key="body" className="text-gray-800 text-sm leading-relaxed whitespace-pre-wrap">{text}</p>
+                    );
+                  })}
+                  {/* Carrossel */}
+                  {template.components?.map((comp) => {
+                    const isCarousel = (comp.type || '').toUpperCase() === 'CAROUSEL' || comp.type === 'carousel';
+                    if (!isCarousel || !comp.cards?.length) return null;
+                    return (
+                      <div key="carousel-preview" className="space-y-2">
+                        <p className="text-xs font-semibold text-gray-500 uppercase">Carrossel</p>
+                        <div className="flex gap-2 overflow-x-auto pb-2">
+                          {comp.cards.map((card, cardIdx) => (
+                            <div key={cardIdx} className="flex-shrink-0 w-28 rounded-lg border border-gray-200 overflow-hidden bg-gray-50">
+                              <div className="h-20 bg-gray-200 flex items-center justify-center overflow-hidden">
+                                {carouselHeaderPreviewUrls[cardIdx] ? (
+                                  <img
+                                    src={carouselHeaderPreviewUrls[cardIdx]}
+                                    alt={`Card ${cardIdx + 1}`}
+                                    className="w-full h-full object-cover"
+                                  />
+                                ) : carouselHeaderImageIds[cardIdx] ? (
+                                  <img
+                                    src={`/api/whatsapp/media/${carouselHeaderImageIds[cardIdx]}`}
+                                    alt={`Card ${cardIdx + 1}`}
+                                    className="w-full h-full object-cover"
+                                  />
+                                ) : (
+                                  <span className="text-xs text-gray-500">Imagem</span>
+                                )}
+                              </div>
+                              <div className="p-2 space-y-1">
+                                {card.components?.find((c) => (c.type || '').toLowerCase() === 'buttons')?.buttons?.map((btn, btnIdx) => (
+                                  <div key={btnIdx} className="text-xs truncate text-gray-700">
+                                    {btn.type === 'URL' ? (previewCarouselText[`${cardIdx}-${btnIdx}`] || btn.text) : (previewCarouselPayload[`${cardIdx}-${btnIdx}`] || btn.text)}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {/* Botões (template nível) */}
+                  {template.components?.map((comp) => {
+                    if ((comp.type || '').toUpperCase() !== 'BUTTONS' || !comp.buttons) return null;
+                    return comp.buttons.map((btn, btnIdx) => (
+                      <div key={btnIdx} className="text-xs">
+                        <span className="font-medium text-gray-700">{btn.text}</span>
+                        {btn.url && <span className="text-gray-500 ml-1">{previewButtonParams[btnIdx] ? `(${previewButtonParams[btnIdx]})` : ''}</span>}
+                      </div>
+                    ));
+                  })}
+                </div>
+              </div>
+            </div>
+          </div>
         )}
 
         {template.components && template.components.length > 0 && (
@@ -619,6 +970,7 @@ export default function TemplateDetailsPage() {
                     {comp.type === 'BODY' && '📄'}
                     {comp.type === 'FOOTER' && '📌'}
                     {comp.type === 'BUTTONS' && '🔘'}
+                    {((comp.type || '').toUpperCase() === 'CAROUSEL' || comp.type === 'carousel') && '🎠'}
                     {comp.type}
                   </span>
                   {comp.format && (
@@ -657,6 +1009,32 @@ export default function TemplateDetailsPage() {
                           <span className="flex-shrink-0 text-xs font-medium px-2 py-1 bg-gray-100 rounded">
                             {btn.type}
                           </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {comp.cards && comp.cards.length > 0 && (
+                  <div className="mt-3">
+                    <div className="text-sm font-semibold text-gray-700 mb-2">Cards do carrossel</div>
+                    <div className="space-y-3">
+                      {comp.cards.map((card, cardIdx) => (
+                        <div key={cardIdx} className="bg-white rounded-lg p-3 border border-gray-200">
+                          <div className="text-xs font-bold text-gray-500 mb-2">Card {cardIdx + 1}</div>
+                          {card.components?.map((c, i) => (
+                            <div key={i} className="text-sm text-gray-700 mb-1">
+                              {c.type === 'header' && c.format && <span className="font-medium">Header ({c.format})</span>}
+                              {c.type === 'buttons' && c.buttons && (
+                                <div className="flex flex-wrap gap-2 mt-1">
+                                  {c.buttons.map((b, bi) => (
+                                    <span key={bi} className="px-2 py-0.5 bg-gray-100 rounded text-xs">
+                                      {b.text} ({b.type})
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          ))}
                         </div>
                       ))}
                     </div>
