@@ -293,7 +293,7 @@ async function downloadMedia(mediaId: string, type: 'image' | 'video' | 'documen
       const filename = `whatsapp/${mediaId}.${extension}`;
       
       const blob = await put(filename, buffer, {
-        access: 'public', // SDK usa 'public' mas o store sendo private garante segurança
+        access: 'private', // Store é privado
         contentType: mediaInfo.mime_type || 'image/jpeg',
         addRandomSuffix: false,
       });

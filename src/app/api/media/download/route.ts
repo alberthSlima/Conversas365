@@ -83,7 +83,7 @@ export async function POST(request: NextRequest) {
       
       // Upload para blob PRIVATE
       const blob = await put(filename, buffer, {
-        access: 'public', // SDK usa 'public' mas o store sendo private garante segurança
+        access: 'private', // Store é privado
         contentType: mediaInfo.mime_type || 'image/jpeg',
         addRandomSuffix: false,
       });
