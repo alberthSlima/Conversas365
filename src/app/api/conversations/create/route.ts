@@ -223,26 +223,13 @@ function renderTemplate(template: Template, sentComponents: Array<Record<string,
 }
 
 /**
- * Baixa uma mídia do WhatsApp e salva localmente
+ * Baixa uma mídia do WhatsApp
+ * - Em desenvolvimento: salva localmente
+ * - Em produção (Vercel): salva no Vercel Blob Storage
  */
 async function downloadMedia(mediaId: string, type: 'image' | 'video' | 'document' = 'image'): Promise<string | null> {
   try {
-    const { writeFile, mkdir } = await import('fs/promises');
-    const { existsSync } = await import('fs');
-    const path = await import('path');
-
-    // Verificar se já existe localmente
-    const mediaDir = path.join(process.cwd(), 'public', 'media', 'whatsapp');
-    const extension = type === 'video' ? 'mp4' : type === 'document' ? 'pdf' : 'jpg';
-    const filename = `${mediaId}.${extension}`;
-    const localPath = path.join(mediaDir, filename);
-    const publicUrl = `/media/whatsapp/${filename}`;
-
-    // Se já existe, retorna o caminho
-    if (existsSync(localPath)) {
-      console.log(`[MEDIA] Mídia já existe localmente: ${publicUrl}`);
-      return publicUrl;
-    }
+    const isVercel = process.env.VERCEL === '1';
 
     // Usar funções do whatsapp.ts para autenticação
     const { token } = requireToken();
@@ -255,7 +242,7 @@ async function downloadMedia(mediaId: string, type: 'image' | 'video' | 'documen
       `${baseUrl}/${mediaId}`,
       {
         headers: authHeaders(token),
-        signal: AbortSignal.timeout(15000), // 15 segundos de timeout
+        signal: AbortSignal.timeout(15000),
       }
     );
 
@@ -287,19 +274,66 @@ async function downloadMedia(mediaId: string, type: 'image' | 'video' | 'documen
       return null;
     }
 
-    const buffer = Buffer.from(await downloadResponse.arrayBuffer());
+    const arrayBuffer = await downloadResponse.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
 
-    // 3. Garantir que o diretório existe
-    if (!existsSync(mediaDir)) {
-      await mkdir(mediaDir, { recursive: true });
+    // 3. Salvar conforme ambiente
+    if (isVercel) {
+      // PRODUÇÃO: Salvar no Vercel Blob Storage (PRIVATE)
+      // Validar se o token do Blob está configurado
+      if (!process.env.BLOB_READ_WRITE_TOKEN) {
+        console.error('[MEDIA] BLOB_READ_WRITE_TOKEN não configurado');
+        return null;
+      }
+
+      console.log(`[MEDIA] Salvando no Vercel Blob (PRIVATE): ${mediaId}`);
+      
+      const { put } = await import('@vercel/blob');
+      const extension = type === 'video' ? 'mp4' : type === 'document' ? 'pdf' : 'jpg';
+      const filename = `whatsapp/${mediaId}.${extension}`;
+      
+      const blob = await put(filename, buffer, {
+        access: 'public', // SDK usa 'public' mas o store sendo private garante segurança
+        contentType: mediaInfo.mime_type || 'image/jpeg',
+        addRandomSuffix: false,
+      });
+
+      console.log(`[MEDIA] Mídia salva no Blob privado: ${blob.url}`);
+      
+      // Retorna path da API proxy ao invés da URL direta do blob
+      const proxyUrl = `/api/media/proxy/${mediaId}.${extension}`;
+      return proxyUrl;
+      
+    } else {
+      // DESENVOLVIMENTO: Salvar localmente
+      const { writeFile, mkdir } = await import('fs/promises');
+      const { existsSync } = await import('fs');
+      const path = await import('path');
+
+      const mediaDir = path.join(process.cwd(), 'public', 'media', 'whatsapp');
+      const extension = type === 'video' ? 'mp4' : type === 'document' ? 'pdf' : 'jpg';
+      const filename = `${mediaId}.${extension}`;
+      const localPath = path.join(mediaDir, filename);
+      const publicUrl = `/media/whatsapp/${filename}`;
+
+      // Verificar se já existe
+      if (existsSync(localPath)) {
+        console.log(`[MEDIA] Mídia já existe localmente: ${publicUrl}`);
+        return publicUrl;
+      }
+
+      // Garantir que o diretório existe
+      if (!existsSync(mediaDir)) {
+        await mkdir(mediaDir, { recursive: true });
+      }
+
+      // Salvar o arquivo
+      await writeFile(localPath, buffer);
+
+      console.log(`[MEDIA] Mídia salva em: ${localPath} (${buffer.length} bytes)`);
+
+      return publicUrl;
     }
-
-    // 4. Salvar o arquivo
-    await writeFile(localPath, buffer);
-
-    console.log(`[MEDIA] Mídia salva em: ${localPath} (${buffer.length} bytes)`);
-
-    return publicUrl;
   } catch (error) {
     console.error(`[MEDIA] Erro ao baixar mídia ${mediaId}:`, error);
     return null;
