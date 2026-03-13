@@ -1,23 +1,6 @@
 import { NextResponse } from 'next/server';
 import { requireBusinessId, graphBaseUrl, authHeaders } from '@/lib/whatsapp';
-
-type Template = {
-  id: string;
-  name: string;
-  language: string;
-  status: string;
-  category: string;
-  components?: unknown[];
-  [key: string]: unknown;
-};
-
-type WhatsAppResponse = {
-  data: Template[];
-  paging?: {
-    next?: string;
-    cursors?: { before?: string; after?: string };
-  };
-};
+import { Template, WhatsAppResponse } from '@/types/template';
 
 export async function GET() {
   let config: ReturnType<typeof requireBusinessId>;

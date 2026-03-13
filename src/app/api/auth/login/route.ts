@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server';
-import type { Dispatcher } from 'undici';
+import { ApiClient } from '@/infrastructure/http/ApiClient';
+import { getTlsFetchOptions } from '@/lib/serverTls';
 
 export async function POST(req: Request) {
   try {
-    // aceita JSON e form-urlencoded
     let username: string | undefined;
     let password: string | undefined;
     try {
@@ -12,44 +12,22 @@ export async function POST(req: Request) {
         const body = await req.json();
         username = body?.username;
         password = body?.password;
-      } 
+      }
     } catch {}
 
     if (!username || !password) {
       return NextResponse.json({ ok: false, error: 'username/password required' }, { status: 400 });
     }
 
-    const base = process.env.EXTERNAL_API_BASE_URL || '';
-    if (!base) return NextResponse.json({ ok: false, error: 'EXTERNAL_API_BASE_URL not set' }, { status: 500 });
-
-    const apiRoot = base; 
-    // v2 endpoint
-    const url = `${apiRoot}/api/v2/users/auth`;
-    type RequestInitWithDispatcher = RequestInit & { dispatcher?: Dispatcher };
-    const fetchOptions: RequestInitWithDispatcher = {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json, text/plain',
-      },
-      body: JSON.stringify({ username, password }),
-    };
-    try {
-      const target = new URL(url);
-      const allowInsecure = (process.env.ALLOW_INSECURE_TLS === 'true');
-      const isLocalHttps = target.protocol === 'https:' && (target.hostname === 'localhost' || target.hostname === '127.0.0.1');
-      if (allowInsecure && isLocalHttps) {
-        const undici = await import('undici');
-        fetchOptions.dispatcher = new undici.Agent({ connect: { rejectUnauthorized: false } });
-      }
-    } catch {}
-    const res = await fetch(url, fetchOptions);
+    const client = new ApiClient();
+    const authEndpoint = '/api/v2/users/auth';
+    const tlsOpts = await getTlsFetchOptions(client.getFullUrl(authEndpoint));
+    const res = await client.postResponse(authEndpoint, { username, password }, tlsOpts);
     if (!res.ok) {
       const txt = await res.text().catch(() => '');
       return new NextResponse(txt || 'Upstream error', { status: res.status });
     }
 
-    // Tentar ler token do header Authorization ou do corpo JSON
     const authorizationFromHeader = res.headers.get('authorization') ?? res.headers.get('Authorization') ?? undefined;
 
     // Corpo pode estar vazio; tratar com segurança

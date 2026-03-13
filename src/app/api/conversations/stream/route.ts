@@ -1,4 +1,6 @@
 import type { NextRequest } from 'next/server';
+import { ApiClient } from '@/infrastructure/http/ApiClient';
+import { getTlsFetchOptions } from '@/lib/serverTls';
 
 export const runtime = 'nodejs';
 
@@ -23,17 +25,11 @@ type MappedRow = {
 export async function GET(req: NextRequest) {
   const phone = req.nextUrl.searchParams.get('phone');
   if (!phone) return new Response('phone is required', { status: 400 });
-  const phoneParam: string = phone; // já validado acima
+  const phoneParam: string = phone;
 
-  const baseUrl = process.env.EXTERNAL_API_BASE_URL;
-  if (!baseUrl) return new Response('EXTERNAL_API_BASE_URL not set', { status: 500 });
-
-  const username = process.env.EXTERNAL_API_USERNAME;
-  const password = process.env.EXTERNAL_API_PASSWORD;
-  const headers: Record<string, string> = { Accept: 'application/json' };
-  if (username && password) {
-    headers['Authorization'] = `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
-  }
+  const client = new ApiClient();
+  const endpoint = `/api/v2/conversations/${encodeURIComponent(phoneParam)}`;
+  const tlsOpts = await getTlsFetchOptions(client.getFullUrl(endpoint));
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -41,16 +37,18 @@ export async function GET(req: NextRequest) {
       let closed = false;
 
       function send(data: unknown) {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+        if (closed) return;
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+        } catch (error) {
+          console.error('[STREAM] Erro ao enviar dados:', error);
+        }
       }
-
-     
-      const url = `${baseUrl}/api/v2/conversations/${encodeURIComponent(phoneParam)}`;
 
       async function tick() {
         if (closed) return;
         try {
-          const res = await fetch(url, { headers, cache: 'no-store' });
+          const res = await client.getResponse(endpoint, tlsOpts);
           const raw: unknown = await res.json().catch(() => ([]));
           const list: ApiConversationItem[] = Array.isArray(raw) ? (raw as ApiConversationItem[]) : [];
           const mapped: MappedRow[] = list.map((item) => ({
@@ -62,21 +60,39 @@ export async function GET(req: NextRequest) {
             updatedAt: item.updatedAt ?? undefined,
           }));
           send({ type: 'conversations', data: mapped });
-        } catch {
-          send({ type: 'error' });
+        } catch (error) {
+          console.error('[STREAM] Erro no tick:', error);
+          if (!closed) {
+            send({ type: 'error' });
+          }
         }
       }
 
-      // keepalive ping
-      const pingId = setInterval(() => send({ type: 'ping', t: Date.now() }), 15000);
-      const pollId = setInterval(tick, 5000);
+      const pingId = setInterval(() => {
+        if (!closed) {
+          send({ type: 'ping', t: Date.now() });
+        }
+      }, 15000);
+      
+      const pollId = setInterval(() => {
+        if (!closed) {
+          tick();
+        }
+      }, 5000);
+      
       await tick();
 
       req.signal.addEventListener('abort', () => {
-        closed = true;
-        clearInterval(pollId);
-        clearInterval(pingId);
-        controller.close();
+        if (!closed) {
+          closed = true;
+          clearInterval(pollId);
+          clearInterval(pingId);
+          try {
+            controller.close();
+          } catch (error) {
+            console.error('[STREAM] Erro ao fechar controller:', error);
+          }
+        }
       });
     },
   });

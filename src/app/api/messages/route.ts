@@ -1,12 +1,11 @@
 import { NextResponse } from 'next/server';
-import type { Dispatcher } from 'undici';
+import { ApiClient } from '@/infrastructure/http/ApiClient';
+import { getTlsFetchOptions } from '@/lib/serverTls';
 
-// Proxy para o backend. Não acessa mais o banco diretamente.
-// Suporta aliases: page/pageNumber e size/pageSize.
+// Proxy para o backend. Suporta aliases: page/pageNumber e size/pageSize.
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
 
-  // aliases aceitos
   const pageNumberStr = searchParams.get('pageNumber') ?? searchParams.get('page') ?? '1';
   const pageSizeStr = searchParams.get('pageSize') ?? searchParams.get('size') ?? '10';
 
@@ -16,18 +15,13 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: 'pageNumber/page e pageSize/size devem ser inteiros positivos' }, { status: 400 });
   }
 
-  // demais filtros opcionais (passados diretamente ao backend)
   const passthroughKeys = ['codCli', 'phone', 'state', 'initiatedBy', 'createdAt', 'origin', 'channel'];
 
-  const baseUrl = process.env.EXTERNAL_API_BASE_URL || '';
-  if (!baseUrl) {
-    return NextResponse.json({ error: 'EXTERNAL_API_BASE_URL não configurado no ambiente do web' }, { status: 500 });
-  }
+  const client = new ApiClient();
 
   const backendParams = new URLSearchParams();
   backendParams.set('pageNumber', String(pageNumber));
   backendParams.set('pageSize', String(pageSize));
-  // Compatibilidade: alguns backends usam page/size
   backendParams.set('page', String(pageNumber));
   backendParams.set('size', String(pageSize));
   for (const key of passthroughKeys) {
@@ -35,33 +29,21 @@ export async function GET(req: Request) {
     if (v) backendParams.set(key, v);
   }
 
-  const headers: Record<string, string> = { 'Accept': 'application/json, text/plain' };
-  const appAuth = req.headers.get('cookie')?.split(';').map(s=>s.trim()).find(s=>s.startsWith('app_auth='))?.split('=')[1];
+  const headers: Record<string, string> = { Accept: 'application/json, text/plain' };
+  const appAuth = req.headers.get('cookie')?.split(';').map((s) => s.trim()).find((s) => s.startsWith('app_auth='))?.split('=')[1];
   if (appAuth) {
     let token = appAuth;
     try {
       token = decodeURIComponent(token);
-      // Alguns navegadores/infra codificam duas vezes o valor do cookie
       if (/%[0-9A-Fa-f]{2}/.test(token)) token = decodeURIComponent(token);
     } catch {}
     headers['Authorization'] = token.replace(/^Basic%20/i, 'Basic ');
   }
 
   try {
-    // v2 endpoint: /api/v2/messages
-    const url = `${baseUrl}/api/v2/messages?${backendParams.toString()}`;
-    type RequestInitWithDispatcher = RequestInit & { dispatcher?: Dispatcher };
-    const fetchOptions: RequestInitWithDispatcher = { headers, cache: 'no-store' };
-    try {
-      const target = new URL(url);
-      const allowInsecure = (process.env.ALLOW_INSECURE_TLS === 'true');
-      const isLocalHttps = target.protocol === 'https:' && (target.hostname === 'localhost' || target.hostname === '127.0.0.1');
-      if (allowInsecure && isLocalHttps) {
-        const undici = await import('undici');
-        fetchOptions.dispatcher = new undici.Agent({ connect: { rejectUnauthorized: false } });
-      }
-    } catch {}
-    const res = await fetch(url, fetchOptions);
+    const endpoint = `/api/v2/messages?${backendParams.toString()}`;
+    const tlsOpts = await getTlsFetchOptions(client.getFullUrl(endpoint));
+    const res = await client.getResponse(endpoint, { ...tlsOpts, headers });
     if (!res.ok) {
       const txt = await res.text().catch(() => '');
       return new NextResponse(txt || 'Upstream error', { status: res.status });

@@ -1,7 +1,16 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  serverExternalPackages: ['undici'],
+  images: {
+    remotePatterns: [
+      {
+        protocol: 'https',
+        hostname: 'lookaside.fbsbx.com',
+      },
+    ],
+    unoptimized: true, // Para desenvolvimento local e imagens da API
+  },
 };
 
 export default nextConfig;

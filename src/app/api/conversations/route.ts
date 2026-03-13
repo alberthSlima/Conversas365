@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import type { Dispatcher } from 'undici';
+import { ApiClient } from '@/infrastructure/http/ApiClient';
+import { getTlsFetchOptions } from '@/lib/serverTls';
 
 // Proxy para o backend: GET /api/conversations?phone=...
 export async function GET(req: Request) {
@@ -7,13 +8,10 @@ export async function GET(req: Request) {
   const phone = searchParams.get('phone');
   if (!phone) return NextResponse.json({ error: 'phone is required' }, { status: 400 });
 
-  const baseUrl = process.env.EXTERNAL_API_BASE_URL || '';
-  if (!baseUrl) {
-    return NextResponse.json({ error: 'EXTERNAL_API_BASE_URL não configurado no ambiente do web' }, { status: 500 });
-  }
+  const client = new ApiClient();
 
-  const headers: Record<string, string> = { 'Accept': 'application/json' };
-  const appAuth = req.headers.get('cookie')?.split(';').map(s=>s.trim()).find(s=>s.startsWith('app_auth='))?.split('=')[1];
+  const headers: Record<string, string> = { Accept: 'application/json' };
+  const appAuth = req.headers.get('cookie')?.split(';').map((s) => s.trim()).find((s) => s.startsWith('app_auth='))?.split('=')[1];
   if (appAuth) {
     let token = appAuth;
     try {
@@ -24,21 +22,9 @@ export async function GET(req: Request) {
   }
 
   try {
-    const apiRoot = baseUrl; // usar exatamente a variável de ambiente
-    // Novo endpoint v2: /api/v2/conversations/{phone}
-    const url = `${apiRoot}/api/v2/conversations/${encodeURIComponent(phone)}`;
-    type RequestInitWithDispatcher = RequestInit & { dispatcher?: Dispatcher };
-    const fetchOptions: RequestInitWithDispatcher = { headers, cache: 'no-store' };
-    try {
-      const target = new URL(url);
-      const allowInsecure = (process.env.ALLOW_INSECURE_TLS === 'true');
-      const isLocalHttps = target.protocol === 'https:' && (target.hostname === 'localhost' || target.hostname === '127.0.0.1');
-      if (allowInsecure && isLocalHttps) {
-        const undici = await import('undici');
-        fetchOptions.dispatcher = new undici.Agent({ connect: { rejectUnauthorized: false } });
-      }
-    } catch {}
-    const res = await fetch(url, fetchOptions);
+    const endpoint = `/api/v2/conversations/${encodeURIComponent(phone)}`;
+    const tlsOpts = await getTlsFetchOptions(client.getFullUrl(endpoint));
+    const res = await client.getResponse(endpoint, { ...tlsOpts, headers });
     const rawJson: unknown = await res.json().catch(() => ([]));
     return NextResponse.json({ data: rawJson }, { status: res.status });
   } catch (e) {

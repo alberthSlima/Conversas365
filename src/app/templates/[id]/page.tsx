@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
+import Image from "next/image";
 import * as XLSX from 'xlsx';
 import Header from "@/components/Header";
 
@@ -36,6 +37,34 @@ type Template = {
   parameter_format?: string;
 };
 
+type MedeirosProduct = {
+  codProd: number;
+  branchCode: string;
+  description: string;
+  ecommerceName: string;
+  packaging: string;
+  price: number;
+  section: string;
+  department: string;
+  unit: string;
+  stock: number;
+  url: string;
+  externalUpdatedAt: string;
+  externalCreatedAt: string;
+};
+
+/** Campos do produto que o usuário pode vincular manualmente a um campo do template */
+const PRODUCT_FIELDS_FOR_LINK: { key: keyof MedeirosProduct; label: string }[] = [
+  { key: 'ecommerceName', label: 'Nome (e-commerce)' },
+  { key: 'description', label: 'Descrição' },
+  { key: 'price', label: 'Preço' },
+  { key: 'url', label: 'Link' },
+  { key: 'codProd', label: 'Código' },
+  { key: 'section', label: 'Seção' },
+  { key: 'department', label: 'Departamento' },
+  { key: 'packaging', label: 'Embalagem' },
+];
+
 export default function TemplateDetailsPage() {
   const params = useParams();
   const router = useRouter();
@@ -51,19 +80,28 @@ export default function TemplateDetailsPage() {
   const [showColumnSelect, setShowColumnSelect] = useState(false);
   const [spreadsheetData, setSpreadsheetData] = useState<string[][]>([]);
   const [columns, setColumns] = useState<string[]>([]);
-  /** ID da mídia por card (header image) após upload - chave = cardIdx */
   const [carouselHeaderImageIds, setCarouselHeaderImageIds] = useState<Record<number, string>>({});
-  /** URL de preview (blob) da imagem do card para exibir no preview em vez do ID */
   const [carouselHeaderPreviewUrls, setCarouselHeaderPreviewUrls] = useState<Record<number, string>>({});
   const [carouselUploadingCard, setCarouselUploadingCard] = useState<number | null>(null);
   const [pendingCarouselUploadCard, setPendingCarouselUploadCard] = useState<number | null>(null);
   const carouselFileInputRef = useRef<HTMLInputElement>(null);
-
-  /** Estado para preview em tempo real */
   const [previewBodyParams, setPreviewBodyParams] = useState<string[]>([]);
   const [previewButtonParams, setPreviewButtonParams] = useState<Record<number, string>>({});
   const [previewCarouselPayload, setPreviewCarouselPayload] = useState<Record<string, string>>({});
   const [previewCarouselText, setPreviewCarouselText] = useState<Record<string, string>>({});
+  
+  /** Estado para modal de confirmação antes de enviar */
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [pendingFormData, setPendingFormData] = useState<FormData | null>(null);
+  
+  const [showProductSelector, setShowProductSelector] = useState(false);
+  const [productSelectorCardIdx, setProductSelectorCardIdx] = useState<number | null>(null);
+  const [selectedProductForLinking, setSelectedProductForLinking] = useState<MedeirosProduct | null>(null);
+  const [linkMapping, setLinkMapping] = useState<Record<string, string>>({});
+  const [products, setProducts] = useState<MedeirosProduct[]>([]);
+  const [loadingProducts, setLoadingProducts] = useState(false);
+  const [productSearchTerm, setProductSearchTerm] = useState('');
+  const [selectedBranch, setSelectedBranch] = useState('1');
 
   function openCarouselFilePicker(cardIdx: number) {
     setPendingCarouselUploadCard(cardIdx);
@@ -159,6 +197,119 @@ export default function TemplateDetailsPage() {
     }
   }, [showSendForm]);
 
+  // Buscar produtos da API
+  async function fetchProducts() {
+    setLoadingProducts(true);
+    try {
+      const res = await fetch(`/api/medeiros/products?branch=${selectedBranch}`);
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.error || 'Erro ao buscar produtos');
+      }
+      const data = await res.json();
+      setProducts(data);
+    } catch (e) {
+      alert('Erro ao buscar produtos: ' + (e instanceof Error ? e.message : 'Erro desconhecido'));
+    } finally {
+      setLoadingProducts(false);
+    }
+  }
+
+  // Abrir seletor de produtos (cardIdx = índice do card a preencher)
+  function openProductSelector(cardIdx: number) {
+    setProductSelectorCardIdx(cardIdx);
+    setSelectedProductForLinking(null);
+    setLinkMapping({});
+    setShowProductSelector(true);
+    if (products.length === 0) {
+      fetchProducts();
+    }
+  }
+
+  // Opções de destino para vincular (apenas botões do card do carrossel; corpo não é preenchido por este fluxo)
+  function getTargetOptions(cardIdx: number): { value: string; label: string }[] {
+    const opts: { value: string; label: string }[] = [{ value: '', label: '— Não preencher' }];
+    const carouselComp = template?.components?.find(
+      (c) => (c.type || '').toUpperCase() === 'CAROUSEL' || c.type === 'carousel'
+    );
+    const card = carouselComp?.cards?.[cardIdx];
+    const buttonsComp = card?.components?.find((c) => (c.type || '').toLowerCase() === 'buttons');
+    buttonsComp?.buttons?.forEach((btn, btnIdx) => {
+      if ((btn.type || '').toUpperCase() === 'QUICK_REPLY') {
+        opts.push({ value: `carousel_${cardIdx}_payload_${btnIdx}`, label: `Botão "${btn.text}" (payload)` });
+      }
+      if ((btn.type || '').toUpperCase() === 'URL') {
+        opts.push({ value: `carousel_${cardIdx}_url_${btnIdx}`, label: `Botão "${btn.text}" (URL)` });
+      }
+    });
+    return opts;
+  }
+
+  // Valor formatado do campo do produto para preencher no template
+  function getProductFieldValue(product: MedeirosProduct, key: keyof MedeirosProduct): string {
+    const v = product[key];
+    if (key === 'price') return typeof v === 'number' ? `R$ ${(v as number).toFixed(2)}` : '';
+    if (v === undefined || v === null) return '';
+    return String(v);
+  }
+
+  // Aplicar o vínculo manual: preenche os campos do formulário conforme linkMapping
+  function applyLinkMapping() {
+    const product = selectedProductForLinking;
+    const cardIdx = productSelectorCardIdx;
+    if (!product || cardIdx === null || cardIdx === undefined) return;
+
+    Object.entries(linkMapping).forEach(([productKey, targetId]) => {
+      if (!targetId) return;
+      const value = getProductFieldValue(product, productKey as keyof MedeirosProduct);
+      if (targetId.startsWith('body_')) {
+        const i = parseInt(targetId.replace('body_', ''), 10);
+        if (!Number.isNaN(i)) {
+          setPreviewBodyParams((prev) => {
+            const next = prev.length ? [...prev] : [];
+            next[i] = value;
+            return next;
+          });
+        }
+      }
+      if (targetId.startsWith('carousel_')) {
+        const m = targetId.match(/carousel_(\d+)_(payload|url)_(\d+)/);
+        if (m) {
+          const [, cIdx, type, bIdx] = m;
+          const key = `${cIdx}-${bIdx}`;
+          if (type === 'payload') {
+            setPreviewCarouselPayload((prev) => ({ ...prev, [key]: value }));
+          } else {
+            // Para URL: extrair apenas o path (sem protocolo e domínio)
+            let urlPath = value;
+            try {
+              const url = new URL(value);
+              urlPath = url.pathname + url.search + url.hash; // Ex: /produto-slug-123
+            } catch {
+              // Se não for URL completa, assume que é apenas o path
+              urlPath = value.startsWith('/') ? value : `/${value}`;
+            }
+            console.log(`[FRONTEND] Produto URL: "${value}" -> Path: "${urlPath}"`);
+            setPreviewCarouselText((prev) => ({ ...prev, [key]: urlPath }));
+          }
+        }
+      }
+    });
+
+    setSelectedProductForLinking(null);
+    setLinkMapping({});
+    setProductSelectorCardIdx(null);
+    setShowProductSelector(false);
+  }
+
+  // Filtrar produtos por termo de busca
+  const filteredProducts = products.filter(p => 
+    (p.description?.toLowerCase().includes(productSearchTerm.toLowerCase()) ||
+     p.ecommerceName?.toLowerCase().includes(productSearchTerm.toLowerCase()) ||
+     p.section?.toLowerCase().includes(productSearchTerm.toLowerCase()) ||
+     p.codProd?.toString().includes(productSearchTerm))
+  );
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
@@ -249,6 +400,22 @@ export default function TemplateDetailsPage() {
     setShowColumnSelect(false);
     setSpreadsheetData([]);
     setColumns([]);
+  }
+
+  // Abrir modal de confirmação com preview
+  function handlePreSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const formData = new FormData(e.currentTarget);
+    setPendingFormData(formData);
+    setShowConfirmModal(true);
+  }
+
+  // Confirmar e enviar de fato
+  async function confirmAndSend() {
+    if (!pendingFormData || !template) return;
+    setShowConfirmModal(false);
+    await handleSendTemplate(pendingFormData);
+    setPendingFormData(null);
   }
 
   async function handleSendTemplate(formData: FormData) {
@@ -403,6 +570,42 @@ export default function TemplateDetailsPage() {
           // Verificar se a mensagem foi aceita pelo WhatsApp
           if (responseData.messages && responseData.messages[0]?.message_status === 'accepted') {
             const messageId = responseData.messages[0].id;
+            const waId = messageId; // O waId é o ID da mensagem do WhatsApp
+            const phone = responseData.contacts?.[0]?.input || phoneArray[0]; // Telefone do contato
+
+            // Extrair o texto do body para salvar na conversa
+            let bodyText = '';
+            const bodyComp = template.components?.find((c) => (c.type || '').toUpperCase() === 'BODY');
+            if (bodyComp?.text) {
+              bodyText = bodyComp.text;
+              // Substituir placeholders pelos valores reais
+              const bodyParams = components.find((c) => c.type === 'body')?.parameters || [];
+              bodyParams.forEach((param, idx) => {
+                if (param.type === 'text' && param.text) {
+                  bodyText = bodyText.replace(new RegExp(`\\{\\{${idx + 1}\\}\\}`, 'g'), param.text);
+                }
+              });
+            }
+
+            // Criar a conversa no backend com o payload completo
+            try {
+              await fetch('/api/conversations/create', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  phone,
+                  waId,
+                  templateName: template.name,
+                  bodyText,
+                  templatePayload: payload, // Payload completo do template enviado
+                  templateStructure: template, // Estrutura original do template
+                }),
+              });
+            } catch (convError) {
+              console.error('[CONVERSATION ERROR]', convError);
+              // Não falhar o envio se a conversa não for criada
+            }
+
             results.push(`✅ ${phone}: Enviado (ID: ${messageId})`);
             successCount++;
           } else {
@@ -548,6 +751,191 @@ export default function TemplateDetailsPage() {
         </div>
       )}
 
+      {/* Modal de Seleção de Produtos */}
+      {showProductSelector && (
+        <div className="fixed inset-0 bg-black bg-opacity-60 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-fadeIn">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-6xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+            {selectedProductForLinking ? (
+              <>
+                <div className="bg-gradient-to-r from-purple-600 to-indigo-600 px-6 py-5">
+                  <h3 className="text-xl font-bold text-white mb-2">🔗 Vincular campos do produto</h3>
+                  <p className="text-purple-100 text-sm">
+                    {selectedProductForLinking.ecommerceName || selectedProductForLinking.description} — R$ {selectedProductForLinking.price?.toFixed(2)}
+                  </p>
+                </div>
+                <div className="p-6 overflow-auto flex-1">
+                  <div className="space-y-4 max-w-2xl">
+                    {PRODUCT_FIELDS_FOR_LINK.map(({ key, label }) => {
+                      const targetOptions = getTargetOptions(productSelectorCardIdx ?? 0);
+                      return (
+                        <div key={key} className="flex flex-wrap items-center gap-3">
+                          <label className="font-medium text-gray-700 min-w-[140px]">{label}</label>
+                          <span className="text-gray-400">→</span>
+                          <select
+                            value={linkMapping[key] ?? ''}
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              setLinkMapping((prev) => {
+                                const next = { ...prev };
+                                if (v) next[key] = v; else delete next[key];
+                                return next;
+                              });
+                            }}
+                            className="flex-1 min-w-[200px] px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                          >
+                            {targetOptions.map((opt) => (
+                              <option key={opt.value || 'none'} value={opt.value}>{opt.label}</option>
+                            ))}
+                          </select>
+                          <span className="text-sm text-gray-500 truncate max-w-[200px]" title={String(getProductFieldValue(selectedProductForLinking, key) ?? '')}>
+                            Valor: {String(getProductFieldValue(selectedProductForLinking, key) ?? '—').slice(0, 30)}{(String(getProductFieldValue(selectedProductForLinking, key) ?? '').length > 30 ? '…' : '')}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="px-6 py-4 bg-gray-50 border-t flex gap-3">
+                  <button
+                    type="button"
+                    onClick={() => { setSelectedProductForLinking(null); setLinkMapping({}); }}
+                    className="px-4 py-2 border border-gray-300 rounded-xl text-gray-700 hover:bg-gray-100"
+                  >
+                    Voltar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => applyLinkMapping()}
+                    className="px-6 py-2 bg-purple-600 text-white rounded-xl hover:bg-purple-700"
+                  >
+                    Aplicar
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+            <div className="bg-gradient-to-r from-green-600 to-emerald-600 px-6 py-5">
+              <h3 className="text-xl font-bold text-white mb-2">🛒 Selecione um produto</h3>
+              <p className="text-green-100 text-sm">
+                Escolha um produto e na próxima tela vincule os campos ao formulário
+              </p>
+            </div>
+            
+            <div className="p-6 border-b">
+              <div className="flex flex-col sm:flex-row gap-3">
+                <div className="flex-1">
+                  <input
+                    type="text"
+                    placeholder="Pesquisar por nome, código ou seção..."
+                    value={productSearchTerm}
+                    onChange={(e) => setProductSearchTerm(e.target.value)}
+                    className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                  />
+                </div>
+                <select
+                  value={selectedBranch}
+                  onChange={(e) => {
+                    setSelectedBranch(e.target.value);
+                    setProducts([]);
+                  }}
+                  className="px-4 py-3 border-2 border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                >
+                  <option value="1">Maranhão</option>
+                  <option value="7">Piauí</option>
+                  <option value="19">Bahia</option>
+                </select>
+                <button
+                  onClick={fetchProducts}
+                  disabled={loadingProducts}
+                  className="px-6 py-3 bg-green-600 text-white rounded-xl hover:bg-green-700 disabled:opacity-50 font-medium transition-all"
+                >
+                  {loadingProducts ? 'Buscando...' : 'Buscar'}
+                </button>
+              </div>
+            </div>
+
+            <div className="p-6 overflow-auto flex-1">
+              {loadingProducts ? (
+                <div className="flex items-center justify-center h-64">
+                  <div className="animate-spin w-12 h-12 border-4 border-green-600 border-t-transparent rounded-full"></div>
+                </div>
+              ) : filteredProducts.length === 0 ? (
+                <div className="text-center py-12">
+                  <svg className="w-16 h-16 mx-auto text-gray-400 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
+                  </svg>
+                  <p className="text-gray-500 text-lg font-medium">
+                    {products.length === 0 ? 'Clique em "Buscar" para carregar os produtos' : 'Nenhum produto encontrado'}
+                  </p>
+                </div>
+              ) : (
+                <div className="grid gap-3">
+                  {filteredProducts.map((product) => (
+                    <button
+                      key={product.codProd}
+                      onClick={() => setSelectedProductForLinking(product)}
+                      className="group p-4 border-2 border-gray-200 rounded-xl hover:border-green-500 hover:bg-green-50 text-left transition-all duration-200 hover:shadow-md"
+                    >
+                      <div className="flex items-start gap-4">
+                        <div className="flex-shrink-0 w-12 h-12 bg-gray-100 group-hover:bg-green-100 rounded-lg flex items-center justify-center transition-colors">
+                          <svg className="w-6 h-6 text-gray-600 group-hover:text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+                          </svg>
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-start justify-between gap-3 mb-2">
+                            <div className="font-semibold text-gray-900 group-hover:text-green-700 transition-colors">
+                              {product.ecommerceName || product.description}
+                            </div>
+                            <div className="flex-shrink-0 font-bold text-green-600 text-lg">
+                              R$ {product.price?.toFixed(2)}
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap gap-2 text-sm">
+                            <span className="px-2 py-1 bg-gray-100 rounded text-gray-600">
+                              Cód: {product.codProd}
+                            </span>
+                            <span className="px-2 py-1 bg-blue-100 rounded text-blue-700">
+                              {product.section}
+                            </span>
+                            <span className="px-2 py-1 bg-purple-100 rounded text-purple-700">
+                              {product.department}
+                            </span>
+                          </div>
+                          <div className="text-xs text-gray-500 mt-2">
+                            {product.packaging}
+                          </div>
+                        </div>
+                        <svg className="w-5 h-5 text-gray-400 group-hover:text-green-600 transition-colors flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                        </svg>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="px-6 py-4 bg-gray-50 border-t">
+              <button
+                onClick={() => {
+                  setShowProductSelector(false);
+                  setProductSearchTerm('');
+                  setProductSelectorCardIdx(null);
+                  setSelectedProductForLinking(null);
+                  setLinkMapping({});
+                }}
+                className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl hover:bg-gray-100 font-medium transition-colors"
+              >
+                Cancelar
+              </button>
+            </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
       <div className="bg-white rounded-2xl shadow-xl border border-gray-200 overflow-hidden">
         <div className="bg-gradient-to-r from-blue-600 to-blue-700 px-6 sm:px-8 py-6">
           <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
@@ -601,15 +989,12 @@ export default function TemplateDetailsPage() {
 
         <div className="p-6 sm:p-8">
 
-        {/* Formulário de Envio + Preview */}
+        {/* Formulário de Envio com Preview embaixo (não mais fixo) */}
         {showSendForm && template && (
-          <div className="mb-8 flex flex-col lg:flex-row gap-6">
+          <div className="mb-8 space-y-6">
             <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                handleSendTemplate(new FormData(e.currentTarget));
-              }}
-              className="flex-1 min-w-0 bg-gradient-to-br from-blue-50 to-indigo-50 rounded-2xl p-6 border-2 border-blue-200 shadow-lg"
+              onSubmit={handlePreSubmit}
+              className="w-full bg-gradient-to-br from-blue-50 to-indigo-50 rounded-2xl p-6 border-2 border-blue-200 shadow-lg"
             >
             <input
               ref={carouselFileInputRef}
@@ -749,7 +1134,19 @@ export default function TemplateDetailsPage() {
                   </h4>
                   {comp.cards.map((card, cardIdx) => (
                     <div key={cardIdx} className="mb-4 last:mb-0 p-3 bg-white rounded-lg border border-purple-100">
-                      <div className="text-xs font-bold text-purple-700 mb-2">Card {cardIdx + 1}</div>
+                      <div className="flex items-center justify-between gap-2 mb-2">
+                        <span className="text-xs font-bold text-purple-700">Card {cardIdx + 1}</span>
+                        <button
+                          type="button"
+                          onClick={() => openProductSelector(cardIdx)}
+                          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-gradient-to-r from-green-600 to-emerald-600 text-white hover:from-green-700 hover:to-emerald-700 text-xs font-semibold shadow-sm"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" />
+                          </svg>
+                          Preencher com Produto
+                        </button>
+                      </div>
                       {card.components?.map((c) => {
                         const cType = (c.type || '').toLowerCase();
                         if (cType === 'header' && (c.format || '').toLowerCase() === 'image') {
@@ -876,77 +1273,156 @@ export default function TemplateDetailsPage() {
               </button>
             </div>
           </form>
+          </div>
+        )}
 
-            {/* Preview em tempo real */}
-            <div className="w-full lg:w-[380px] flex-shrink-0">
-              <div className="sticky top-24 bg-white rounded-2xl border-2 border-gray-200 shadow-lg overflow-hidden">
-                <div className="bg-green-600 px-4 py-2 text-white text-sm font-semibold flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-white" />
-                  Preview da mensagem
+        {/* Modal de Confirmação com Preview */}
+        {showConfirmModal && template && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+              <div className="bg-gradient-to-r from-green-600 to-emerald-600 px-6 py-4 flex items-center justify-between flex-shrink-0">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center">
+                    <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                    </svg>
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-bold text-white">Preview da Mensagem</h3>
+                    <p className="text-sm text-white/90">Confira antes de enviar</p>
+                  </div>
                 </div>
-                <div className="p-4 space-y-3 min-h-[200px]">
-                  {/* Body */}
-                  {template.components?.map((comp) => {
-                    if ((comp.type || '').toUpperCase() !== 'BODY' || !comp.text) return null;
-                    let text = comp.text;
-                    (previewBodyParams || []).forEach((val, i) => {
-                      text = text.replace(new RegExp(`\\{\\{${i + 1}\\}\\}`, 'g'), val || `{{${i + 1}}}`);
-                    });
-                    return (
-                      <p key="body" className="text-gray-800 text-sm leading-relaxed whitespace-pre-wrap">{text}</p>
-                    );
-                  })}
-                  {/* Carrossel */}
-                  {template.components?.map((comp) => {
-                    const isCarousel = (comp.type || '').toUpperCase() === 'CAROUSEL' || comp.type === 'carousel';
-                    if (!isCarousel || !comp.cards?.length) return null;
-                    return (
-                      <div key="carousel-preview" className="space-y-2">
-                        <p className="text-xs font-semibold text-gray-500 uppercase">Carrossel</p>
-                        <div className="flex gap-2 overflow-x-auto pb-2">
-                          {comp.cards.map((card, cardIdx) => (
-                            <div key={cardIdx} className="flex-shrink-0 w-28 rounded-lg border border-gray-200 overflow-hidden bg-gray-50">
-                              <div className="h-20 bg-gray-200 flex items-center justify-center overflow-hidden">
-                                {carouselHeaderPreviewUrls[cardIdx] ? (
-                                  <img
-                                    src={carouselHeaderPreviewUrls[cardIdx]}
-                                    alt={`Card ${cardIdx + 1}`}
-                                    className="w-full h-full object-cover"
-                                  />
-                                ) : carouselHeaderImageIds[cardIdx] ? (
-                                  <img
-                                    src={`/api/whatsapp/media/${carouselHeaderImageIds[cardIdx]}`}
-                                    alt={`Card ${cardIdx + 1}`}
-                                    className="w-full h-full object-cover"
-                                  />
-                                ) : (
-                                  <span className="text-xs text-gray-500">Imagem</span>
-                                )}
+                <button
+                  onClick={() => setShowConfirmModal(false)}
+                  className="w-8 h-8 rounded-full hover:bg-white/20 flex items-center justify-center transition-colors"
+                >
+                  <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+
+              <div className="p-6 space-y-4 overflow-auto flex-1 bg-gradient-to-br from-gray-50 to-white">
+                {/* Body */}
+                {template.components?.map((comp) => {
+                  if ((comp.type || '').toUpperCase() !== 'BODY' || !comp.text) return null;
+                  let text = comp.text;
+                  (previewBodyParams || []).forEach((val, i) => {
+                    text = text.replace(new RegExp(`\\{\\{${i + 1}\\}\\}`, 'g'), val || `{{${i + 1}}}`);
+                  });
+                  return (
+                    <div key="body" className="bg-white rounded-xl p-4 border-2 border-gray-200 shadow-sm">
+                      <p className="text-gray-800 text-sm leading-relaxed whitespace-pre-wrap">{text}</p>
+                    </div>
+                  );
+                })}
+
+                {/* Carrossel - Horizontal com scroll */}
+                {template.components?.map((comp) => {
+                  const isCarousel = (comp.type || '').toUpperCase() === 'CAROUSEL' || comp.type === 'carousel';
+                  if (!isCarousel || !comp.cards?.length) return null;
+                  return (
+                    <div key="carousel-preview" className="space-y-2">
+                      <p className="text-xs font-semibold text-gray-500 uppercase flex items-center gap-2">
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                        </svg>
+                        Carrossel ({comp.cards?.length || 0} cards)
+                      </p>
+                      <div className="flex gap-4 overflow-x-auto pb-3 -mx-2 px-2" style={{scrollbarWidth: 'thin'}}>
+                        {comp.cards.map((card, cardIdx) => (
+                          <div key={cardIdx} className="flex-shrink-0 w-72 rounded-xl border-2 border-gray-200 overflow-hidden bg-white shadow-sm">
+                            <div className="relative h-56 bg-gradient-to-br from-gray-100 to-gray-200 flex items-center justify-center overflow-hidden">
+                              {carouselHeaderPreviewUrls[cardIdx] ? (
+                                <Image src={carouselHeaderPreviewUrls[cardIdx]} alt={`Card ${cardIdx + 1}`} fill className="object-cover" unoptimized />
+                              ) : carouselHeaderImageIds[cardIdx] ? (
+                                <Image src={`/api/whatsapp/media/${carouselHeaderImageIds[cardIdx]}`} alt={`Card ${cardIdx + 1}`} fill className="object-cover" unoptimized />
+                              ) : (
+                                <div className="text-center">
+                                  <svg className="w-12 h-12 mx-auto text-gray-400 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                                  </svg>
+                                  <span className="text-sm text-gray-500">Card {cardIdx + 1}</span>
+                                </div>
+                              )}
+                              <div className="absolute top-3 left-3 bg-black/70 text-white text-xs font-bold px-3 py-1.5 rounded-full shadow-lg">
+                                {cardIdx + 1}/{comp.cards?.length || 0}
                               </div>
-                              <div className="p-2 space-y-1">
+                            </div>
+                            {card.components?.find((c) => (c.type || '').toLowerCase() === 'buttons')?.buttons && (
+                              <div className="p-3 space-y-2 bg-gray-50">
                                 {card.components?.find((c) => (c.type || '').toLowerCase() === 'buttons')?.buttons?.map((btn, btnIdx) => (
-                                  <div key={btnIdx} className="text-xs truncate text-gray-700">
-                                    {btn.type === 'URL' ? (previewCarouselText[`${cardIdx}-${btnIdx}`] || btn.text) : (previewCarouselPayload[`${cardIdx}-${btnIdx}`] || btn.text)}
+                                  <div key={btnIdx} className="flex items-center gap-2 text-xs">
+                                    <div className="flex-shrink-0 w-5 h-5 bg-green-100 rounded-full flex items-center justify-center">
+                                      <svg className="w-3 h-3 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                                      </svg>
+                                    </div>
+                                    <span className="font-medium text-gray-700 truncate">
+                                      {btn.type === 'URL' ? btn.text : (previewCarouselPayload[`${cardIdx}-${btnIdx}`] || btn.text)}
+                                    </span>
                                   </div>
                                 ))}
                               </div>
-                            </div>
-                          ))}
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {/* Botões (template nível) */}
+                {template.components?.map((comp) => {
+                  if ((comp.type || '').toUpperCase() !== 'BUTTONS' || !comp.buttons) return null;
+                  return (
+                    <div key="buttons" className="bg-white rounded-xl p-4 border-2 border-gray-200 shadow-sm space-y-2">
+                      {comp.buttons.map((btn, btnIdx) => (
+                        <div key={btnIdx} className="flex items-center gap-2 text-sm">
+                          <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                          </svg>
+                          <span className="font-medium text-gray-700">{btn.text}</span>
+                          {btn.url && <span className="text-gray-500 text-xs">{previewButtonParams[btnIdx] ? `(${previewButtonParams[btnIdx]})` : ''}</span>}
                         </div>
-                      </div>
-                    );
-                  })}
-                  {/* Botões (template nível) */}
-                  {template.components?.map((comp) => {
-                    if ((comp.type || '').toUpperCase() !== 'BUTTONS' || !comp.buttons) return null;
-                    return comp.buttons.map((btn, btnIdx) => (
-                      <div key={btnIdx} className="text-xs">
-                        <span className="font-medium text-gray-700">{btn.text}</span>
-                        {btn.url && <span className="text-gray-500 ml-1">{previewButtonParams[btnIdx] ? `(${previewButtonParams[btnIdx]})` : ''}</span>}
-                      </div>
-                    ));
-                  })}
-                </div>
+                      ))}
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="p-4 bg-gray-50 border-t-2 border-gray-200 flex gap-3 flex-shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setShowConfirmModal(false)}
+                  className="flex-1 px-6 py-3 border-2 border-gray-300 rounded-xl hover:bg-gray-100 font-semibold transition-all"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmAndSend}
+                  disabled={sending}
+                  className="flex-1 px-6 py-3 bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-xl hover:from-green-700 hover:to-emerald-700 disabled:opacity-50 font-semibold transition-all shadow-md hover:shadow-lg flex items-center justify-center gap-2"
+                >
+                  {sending ? (
+                    <>
+                      <svg className="animate-spin w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                      Enviando...
+                    </>
+                  ) : (
+                    <>
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                      </svg>
+                      Confirmar e Enviar
+                    </>
+                  )}
+                </button>
               </div>
             </div>
           </div>
