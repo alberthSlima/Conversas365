@@ -24,8 +24,8 @@ const envSchema = z.object({
   // Vercel Blob Storage
   BLOB_READ_WRITE_TOKEN: z.string().min(1),
 
-  // Logging
-  ENABLE_LOGS: z.string().default('false'),
+  // Logging (opcional, padrão: false)
+  ENABLE_LOGS: z.string().optional().default('false'),
 
   // Ambiente
   VERCEL: z.string().optional(),
