@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { readdir, stat, unlink } from 'fs/promises';
 import path from 'path';
+import { logger } from '@/utils/logger';
 
 /**
  * Endpoint para limpar mídias antigas (mais de X dias)
@@ -39,7 +40,7 @@ export async function POST(request: NextRequest) {
         await unlink(filePath);
         deletedCount++;
         deletedSize += stats.size;
-        console.log(`[MEDIA CLEANUP] Deletado: ${file} (${stats.size} bytes)`);
+        logger.info('MEDIA:CLEANUP', `Deletado: ${file} (${stats.size} bytes)`);
       }
     }
 
@@ -52,7 +53,7 @@ export async function POST(request: NextRequest) {
     });
 
   } catch (error) {
-    console.error('[MEDIA CLEANUP] Erro:', error);
+    logger.error('MEDIA:CLEANUP', 'Erro ao limpar mídias', error);
     return NextResponse.json(
       { 
         error: 'Erro ao limpar mídias', 

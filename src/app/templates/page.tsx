@@ -3,17 +3,14 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Header from "@/components/Header";
-import { useTemplates } from "@/application/hooks/useTemplates";
+import { useTemplates } from "@/hooks/useTemplates";
 
 export default function TemplatesPage() {
   const router = useRouter();
-  const { templates: domainTemplates, loading, error } = useTemplates();
+  const { templates, loading, error } = useTemplates();
   const [searchTerm, setSearchTerm] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
-
-  // Converter Domain Entities para formato UI (mantém compatibilidade)
-  const templates = domainTemplates.map(t => t.toPrimitives());
 
   // Filtrar por nome
   const filteredTemplates = templates.filter(t => 

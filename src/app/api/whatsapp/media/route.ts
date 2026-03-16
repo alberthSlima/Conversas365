@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
-import { requirePhoneNumberId, graphBaseUrl, authHeaders } from '@/lib/whatsapp';
+import { getGraphBaseUrl, getAuthHeaders, getWhatsAppConfig } from '@/libs/whatsapp';
+import { handleApiError } from '@/utils/errors';
+import { logger } from '@/utils/logger';
 
 /**
  * POST /api/whatsapp/media
@@ -7,17 +9,8 @@ import { requirePhoneNumberId, graphBaseUrl, authHeaders } from '@/lib/whatsapp'
  * Graph API para obter o ID da mídia (usado em templates, ex.: header de card).
  */
 export async function POST(req: Request) {
-  let config: ReturnType<typeof requirePhoneNumberId>;
   try {
-    config = requirePhoneNumberId();
-  } catch (e) {
-    return NextResponse.json(
-      { error: e instanceof Error ? e.message : 'Credenciais WhatsApp não configuradas' },
-      { status: 500 }
-    );
-  }
-
-  try {
+    const config = getWhatsAppConfig();
     const formData = await req.formData();
     const file = formData.get('file');
     const type = (formData.get('type') as string) || 'image/jpeg';
@@ -35,16 +28,16 @@ export async function POST(req: Request) {
     body.append('type', type);
     body.append('messaging_product', messagingProduct);
 
-    const url = `${graphBaseUrl()}/${config.phoneNumberId}/media`;
+    const url = `${getGraphBaseUrl()}/${config.phoneNumberId}/media`;
     const res = await fetch(url, {
       method: 'POST',
-      headers: authHeaders(config.token),
+      headers: getAuthHeaders(config.token),
       body,
     });
 
     const responseText = await res.text();
     if (!res.ok) {
-      console.error('[API MEDIA] WhatsApp Response:', responseText);
+      logger.error('WHATSAPP:MEDIA', 'Erro ao enviar mídia', responseText);
       return NextResponse.json(
         { error: responseText || 'Erro ao enviar mídia para WhatsApp' },
         { status: res.status }
@@ -60,9 +53,7 @@ export async function POST(req: Request) {
     }
 
     return NextResponse.json({ id: data.id });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : 'Erro desconhecido';
-    console.error('[API MEDIA]', e);
-    return NextResponse.json({ error: msg }, { status: 500 });
+  } catch (error) {
+    return handleApiError(error);
   }
 }

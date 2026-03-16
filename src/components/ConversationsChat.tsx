@@ -4,7 +4,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { Check, CheckCheck, Clock, XCircle } from 'lucide-react';
 import { useHub } from '@/components/HubProvider';
-import { parseContextText, parseContextButtons, parseContextImages, parseCarouselCards, type CarouselCard } from '@/lib/dto';
+import { parseContextText, parseContextButtons, parseContextImages, parseCarouselCards } from '@/utils/dto';
+import { ConversationMessage, ParsedMessage, CarouselCard } from '@/types/conversation';
+import { ConversationCreatedPayload, WhatsappEnvelope } from '@/types/hub';
+import { logger } from '@/utils/logger';
 
 // Cache global para evitar múltiplos downloads da mesma imagem
 const downloadingImages = new Set<string>();
@@ -14,19 +17,31 @@ const downloadedImages = new Set<string>();
 function CarouselCardComponent({ card, index }: { card: CarouselCard; index: number }) {
   const [imageStatus, setImageStatus] = useState<'loading' | 'local' | 'not-found' | 'error'>('loading');
   const [isDownloading, setIsDownloading] = useState(false);
-  const [imageSrc, setImageSrc] = useState(`/media/whatsapp/${card.imageId}.jpg?t=${Date.now()}`);
+  const [imageSrc, setImageSrc] = useState(`/api/media/proxy/${card.imageId}.jpg?t=${Date.now()}`);
 
-  // Verifica se a imagem já foi baixada anteriormente
+  // Verifica se a imagem existe no Blob ao carregar
   useEffect(() => {
-    if (downloadedImages.has(card.imageId)) {
-      setImageStatus('local');
-    }
+    const checkImage = async () => {
+      try {
+        const response = await fetch(`/api/media/proxy/${card.imageId}.jpg`, { method: 'HEAD' });
+        if (response.ok) {
+          logger.debug('CHAT', `Imagem já existe no Blob: ${card.imageId}`);
+          setImageStatus('local');
+          downloadedImages.add(card.imageId);
+        } else {
+          setImageStatus('not-found');
+        }
+      } catch {
+        setImageStatus('not-found');
+      }
+    };
+    checkImage();
   }, [card.imageId]);
 
   const handleDownload = async () => {
     if (isDownloading || downloadingImages.has(card.imageId)) return;
     
-    console.log(`[CHAT] Iniciando download de ${card.imageId}`);
+    logger.info('CHAT', `Iniciando download de ${card.imageId}`);
     setIsDownloading(true);
     downloadingImages.add(card.imageId);
 
@@ -41,7 +56,7 @@ function CarouselCardComponent({ card, index }: { card: CarouselCard; index: num
         const data = await response.json() as { url?: string; cached?: boolean };
         if (data.url) {
           downloadedImages.add(card.imageId);
-          console.log(`[CHAT] ${data.cached ? 'Imagem já estava em cache' : 'Download concluído'}: ${card.imageId}`);
+          logger.info('CHAT', `${data.cached ? 'Imagem já estava em cache' : 'Download concluído'}: ${card.imageId}`);
           
           // Sempre força reload da imagem com novo timestamp
           setImageStatus('local');
@@ -49,7 +64,7 @@ function CarouselCardComponent({ card, index }: { card: CarouselCard; index: num
         }
       }
     } catch (error) {
-      console.error(`[CHAT] Erro ao baixar imagem ${card.imageId}:`, error);
+      logger.error('CHAT', `Erro ao baixar imagem ${card.imageId}`, error);
       setImageStatus('error');
     } finally {
       setIsDownloading(false);
@@ -76,12 +91,12 @@ function CarouselCardComponent({ card, index }: { card: CarouselCard; index: num
             alt={`Imagem ${index + 1}`}
             className="w-full h-full object-cover"
             onLoad={() => {
-              console.log(`[CHAT] Imagem carregada com sucesso: ${card.imageId} de ${imageSrc}`);
+              logger.debug('CHAT', `Imagem carregada com sucesso: ${card.imageId} de ${imageSrc}`);
               setImageStatus('local');
               downloadedImages.add(card.imageId);
             }}
             onError={() => {
-              console.log(`[CHAT] Erro ao carregar imagem: ${card.imageId} de ${imageSrc}`);
+              logger.debug('CHAT', `Erro ao carregar imagem: ${card.imageId} de ${imageSrc}`);
               if (imageSrc.includes('/media/whatsapp/')) {
                 setImageStatus('not-found');
               } else {
@@ -164,6 +179,20 @@ function CarouselCardComponent({ card, index }: { card: CarouselCard; index: num
 function ImageCarousel({ cards }: { cards: CarouselCard[] }) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [currentIndex, setCurrentIndex] = useState(0);
+  const [needsScroll, setNeedsScroll] = useState(false);
+
+  // Verificar se precisa de scroll
+  useEffect(() => {
+    const checkScroll = () => {
+      if (!scrollContainerRef.current) return;
+      const container = scrollContainerRef.current;
+      setNeedsScroll(container.scrollWidth > container.clientWidth);
+    };
+    
+    checkScroll();
+    window.addEventListener('resize', checkScroll);
+    return () => window.removeEventListener('resize', checkScroll);
+  }, [cards]);
 
   if (cards.length === 0) return null;
 
@@ -200,111 +229,89 @@ function ImageCarousel({ cards }: { cards: CarouselCard[] }) {
     scrollToIndex(newIndex);
   };
 
-  // Se só tem 1 card
+  // Se só tem 1 card - centralizado
   if (cards.length === 1) {
     return (
-      <div className="mb-2 w-full max-w-[160px] mx-auto">
-        <CarouselCardComponent card={cards[0]} index={0} />
+      <div className="mb-2 w-full flex justify-center">
+        <div className="w-[160px]">
+          <CarouselCardComponent card={cards[0]} index={0} />
+        </div>
       </div>
     );
   }
 
-  // Carousel horizontal compacto
+  // Carousel horizontal compacto e centralizado
   return (
-    <div className="mb-2 w-full relative max-w-full">
-      {/* Setas de navegação */}
-      {currentIndex > 0 && (
-        <button
-          onClick={goToPrevious}
-          className="absolute -left-1 top-1/2 -translate-y-1/2 z-10 w-6 h-6 bg-white/95 hover:bg-white rounded-full shadow-md flex items-center justify-center transition-all"
-          aria-label="Anterior"
-        >
-          <svg className="w-3.5 h-3.5 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 19l-7-7 7-7" />
-          </svg>
-        </button>
-      )}
+    <div className="mb-2 w-full flex justify-center">
+      <div className="relative max-w-full">
+        {/* Setas de navegação - só aparecem se precisar de scroll */}
+        {needsScroll && currentIndex > 0 && (
+          <button
+            onClick={goToPrevious}
+            className="absolute -left-1 top-1/2 -translate-y-1/2 z-10 w-6 h-6 bg-white/95 hover:bg-white rounded-full shadow-md flex items-center justify-center transition-all"
+            aria-label="Anterior"
+          >
+            <svg className="w-3.5 h-3.5 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 19l-7-7 7-7" />
+            </svg>
+          </button>
+        )}
 
-      {currentIndex < cards.length - 1 && (
-        <button
-          onClick={goToNext}
-          className="absolute -right-1 top-1/2 -translate-y-1/2 z-10 w-6 h-6 bg-white/95 hover:bg-white rounded-full shadow-md flex items-center justify-center transition-all"
-          aria-label="Próximo"
-        >
-          <svg className="w-3.5 h-3.5 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
-          </svg>
-        </button>
-      )}
+        {needsScroll && currentIndex < cards.length - 1 && (
+          <button
+            onClick={goToNext}
+            className="absolute -right-1 top-1/2 -translate-y-1/2 z-10 w-6 h-6 bg-white/95 hover:bg-white rounded-full shadow-md flex items-center justify-center transition-all"
+            aria-label="Próximo"
+          >
+            <svg className="w-3.5 h-3.5 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
+            </svg>
+          </button>
+        )}
 
-      {/* Container do carousel - Sempre compacto */}
-      <div 
-        ref={scrollContainerRef}
-        onScroll={handleScroll}
-        className="overflow-x-auto pb-1.5 snap-x snap-mandatory scrollbar-hide scroll-smooth"
-        style={{ scrollSnapType: 'x mandatory' }}
-      >
-        <div className="flex gap-2 px-0.5">
-          {cards.map((card, index) => (
-            <div 
-              key={card.imageId} 
-              className="flex-shrink-0 w-[160px] snap-start"
-              style={{ scrollSnapAlign: 'start' }}
-            >
-              <CarouselCardComponent card={card} index={index} />
-            </div>
-          ))}
+        {/* Container do carousel */}
+        <div 
+          ref={scrollContainerRef}
+          onScroll={handleScroll}
+          className="overflow-x-auto pb-1.5 snap-x snap-mandatory scrollbar-hide scroll-smooth"
+          style={{ scrollSnapType: 'x mandatory' }}
+        >
+          <div className="flex gap-2 px-0.5">
+            {cards.map((card, index) => (
+              <div 
+                key={card.imageId} 
+                className="flex-shrink-0 w-[160px] snap-start"
+                style={{ scrollSnapAlign: 'start' }}
+              >
+                <CarouselCardComponent card={card} index={index} />
+              </div>
+            ))}
+          </div>
         </div>
+
+        {/* Indicadores de posição - só aparecem se precisar de scroll */}
+        {needsScroll && cards.length > 1 && (
+          <div className="flex justify-center gap-1 mt-1.5">
+            {cards.map((_, index) => (
+              <button
+                key={index}
+                onClick={() => scrollToIndex(index)}
+                className={`h-1 rounded-full transition-all ${
+                  index === currentIndex 
+                    ? 'w-3 bg-blue-500' 
+                    : 'w-1 bg-gray-300 hover:bg-gray-400'
+                }`}
+                aria-label={`Ir para card ${index + 1}`}
+              />
+            ))}
+          </div>
+        )}
       </div>
-
-      {/* Indicadores de posição - mais compactos */}
-      {cards.length > 1 && (
-        <div className="flex justify-center gap-1 mt-1.5">
-          {cards.map((_, index) => (
-            <button
-              key={index}
-              onClick={() => scrollToIndex(index)}
-              className={`h-1 rounded-full transition-all ${
-                index === currentIndex 
-                  ? 'w-3 bg-blue-500' 
-                  : 'w-1 bg-gray-300 hover:bg-gray-400'
-              }`}
-              aria-label={`Ir para card ${index + 1}`}
-            />
-          ))}
-        </div>
-      )}
     </div>
   );
 }
 
-type Row = {
-  id: number;
-  state?: string;
-  initiatedBy?: string;
-  context?: string;
-  createdAt: string;
-  updatedAt?: string;
-};
-
-type ParsedMessage = { text: string; buttons: string[]; images: string[]; carouselCards: CarouselCard[] };
-
-type ConversationCreatedPayload = {
-  id?: number | string;
-  state?: string;
-  json?: string;
-};
-
-type WhatsappEnvelope = {
-  entry?: Array<{
-    changes?: Array<{
-      value?: {
-        messages?: Array<{ from?: string; timestamp?: string; type?: string; text?: { body?: string } }>;
-        contacts?: Array<{ wa_id?: string }>;
-      };
-    }>;
-  }>;
-};
+type Row = ConversationMessage;
 
 export function ConversationsChat({ phone, onClose, mode = 'modal' }: { phone: string; onClose?: () => void; mode?: 'modal' | 'page' }) {
   const [rows, setRows] = useState<Row[]>([]);
@@ -389,6 +396,7 @@ export function ConversationsChat({ phone, onClose, mode = 'modal' }: { phone: s
           initiatedBy: initiatedByFromPayload || 'CLIENT',
           context: ctxRaw,
           createdAt: createdAtIso,
+          updatedAt: createdAtIso,
         };
         setRows((curr) => {
           const exists = curr.some(r => r.id === newItem.id && r.createdAt === newItem.createdAt && r.context === newItem.context);
@@ -410,7 +418,7 @@ export function ConversationsChat({ phone, onClose, mode = 'modal' }: { phone: s
       es.onmessage = (ev: MessageEvent<string>) => {
         try {
           const parsed = JSON.parse(ev.data) as { type?: string; data?: Array<Partial<Row>> };
-          console.debug('[SSE] /api/conversations/stream event:', parsed);
+          logger.debug('SSE', '/api/conversations/stream event', parsed);
           if (parsed && parsed.type === 'conversations' && Array.isArray(parsed.data)) {
             // Normalizar para Row[]
             const incoming: Row[] = parsed.data.map((r) => ({
@@ -430,7 +438,7 @@ export function ConversationsChat({ phone, onClose, mode = 'modal' }: { phone: s
         } catch {}
       };
       es.onerror = () => {
-        console.warn('[SSE] /api/conversations/stream error');
+        logger.warn('SSE', '/api/conversations/stream error');
         try { es.close(); } catch {}
       };
       return () => {
@@ -453,7 +461,7 @@ export function ConversationsChat({ phone, onClose, mode = 'modal' }: { phone: s
         const restUrl = `/api/conversations?phone=${encodeURIComponent(phone)}`;
         const res = await fetch(restUrl, { cache: 'no-store' });
         const { data } = await res.json();
-        console.debug('[REST] /api/conversations data:', data);
+        logger.debug('REST', '/api/conversations data', data);
         const list: Row[] = Array.isArray(data) ? data : [];
         const sig = computeSignature(list);
         if (!cancelled && sig !== lastSigRef.current) {
@@ -596,7 +604,7 @@ export function ConversationsChat({ phone, onClose, mode = 'modal' }: { phone: s
                 <div className="space-y-3">
                   {g.items.map(item => (
                     <div key={`${item.id}-${item.createdAt}`} className={`flex ${item.initiatedBy === 'SYSTEM' ? 'justify-end' : 'justify-start'} animate-fadeIn`}>
-                      <div className={`max-w-[90%] sm:max-w-[75%] md:max-w-[60%] rounded-2xl px-3 sm:px-4 py-2.5 sm:py-3 shadow-md ${
+                      <div className={`max-w-[95%] sm:max-w-[85%] md:max-w-[700px] rounded-2xl px-3 sm:px-4 py-2.5 sm:py-3 shadow-md ${
                         item.initiatedBy === 'SYSTEM' 
                           ? 'bg-gradient-to-br from-blue-500 to-blue-600 text-white' 
                           : 'bg-white border-2 border-gray-200 text-gray-900'
@@ -666,8 +674,6 @@ function renderTicks(state?: string) {
   if (s === 'initial') return <Clock className="w-4 h-4 text-blue-100" />;
   return <Clock className="w-4 h-4 text-blue-100" />;
 }
-
-// parsing movido para '@/lib/dto'
 
 function escapeHtml(str: string): string {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');

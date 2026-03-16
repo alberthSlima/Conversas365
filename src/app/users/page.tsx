@@ -2,11 +2,10 @@
 
 import Header from "@/components/Header";
 import { useEffect, useMemo, useState } from "react";
-
-type UserItem = { id?: number; username?: string; role?: string | number };
+import { UserListItem } from "@/types/user";
 
 export default function UsersPage() {
-  const [items, setItems] = useState<UserItem[]>([]);
+  const [items, setItems] = useState<UserListItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [page, setPage] = useState(1);
   const [size] = useState(10);
@@ -45,7 +44,7 @@ export default function UsersPage() {
         if (desc) params.set('desc', 'true');
         const res = await fetch(`/api/users?${params.toString()}`, { cache: 'no-store' });
         const data = await res.json().catch(() => []);
-        const list: UserItem[] = Array.isArray(data?.items) ? data.items : (Array.isArray(data) ? data : []);
+        const list: UserListItem[] = Array.isArray(data?.items) ? data.items : (Array.isArray(data) ? data : []);
         const pickTotal = (obj: Record<string, unknown>): number | null => {
           const cands = ['totalItems','total','totalCount','count','totalElements'];
           for (const k of cands) {
@@ -87,14 +86,14 @@ export default function UsersPage() {
         const params = new URLSearchParams({ pageNumber: '1', pageSize: String(size) });
         const r = await fetch(`/api/users?${params.toString()}`, { cache: 'no-store' });
         const data = await r.json().catch(() => []);
-        const list: UserItem[] = Array.isArray(data?.items) ? data.items : (Array.isArray(data) ? data : []);
+        const list: UserListItem[] = Array.isArray(data?.items) ? data.items : (Array.isArray(data) ? data : []);
         setItems(list);
       }
     } catch {}
     finally { setCreating(false); }
   }
 
-  function beginEdit(u: UserItem) {
+  function beginEdit(u: UserListItem) {
     setEditingId(u.id ?? null);
     const r = typeof u.role === 'number' ? u.role : (String(u.role || '').toLowerCase() === 'admin' ? 1 : 2);
     setEditRole(r as number);

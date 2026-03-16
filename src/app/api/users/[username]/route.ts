@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { ApiClient } from '@/infrastructure/http/ApiClient';
+import { ApiClient } from '@/libs/api';
 import { getTlsFetchOptions } from '@/lib/serverTls';
 
 // GET /api/users/{username}

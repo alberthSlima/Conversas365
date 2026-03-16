@@ -2,23 +2,14 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ConversationsChat } from "./ConversationsChat";
-// import { useRouter } from "next/navigation";
 import { useHub } from "@/components/HubProvider";
+import { Message } from "@/types/message";
+import { logger } from "@/utils/logger";
 
 const DEFAULT_PAGE_SIZE = 7;
 
-interface Message {
-  id: number;
-  conversationId: number;
-  codCli?: string;
-  content: string;
-  createdAt: string;
-  state?: string;
-  phone?: string;
-  channel?: string | null;
-}
-
 export default function MessagesTable() {
+ 
   // const router = useRouter();
   const [messages, setMessages] = useState<Message[]>([]);
   const [page, setPage] = useState(0);
@@ -35,8 +26,6 @@ export default function MessagesTable() {
   function openConversationsModal(phone?: string) {
     if (phone) setModalPhone(phone);
   }
-
-  // Removido: abrir na página
 
   // filtros
   const [filterCodCli, setFilterCodCli] = useState('');
@@ -71,39 +60,20 @@ export default function MessagesTable() {
       if (filterChannel) params.append('channel', filterChannel);
       const res = await fetch(`/api/messages?${params.toString()}`);
       if (!res.ok) {
-        console.error(await res.text());
+        logger.error('MESSAGES', 'Erro ao buscar mensagens', await res.text());
         setMessages([]);
         setTotal(0);
       } else {
-        type ApiConversation = {
-          phone?: string;
-          codCli?: string;
-          state?: string;
-          context?: unknown;
-          initiatedBy?: string;
-          createdAt?: string;
-          updatedAt?: string;
-        };
-        type ApiItem = {
-          id: number;
-          conversationId: number;
-          conversation?: ApiConversation;
-          channel?: string | null;
-          content: string;
-          origin?: string | null;
-          createdAt: string;
-        };
         const { items, totalItems } = await res.json();
-        const list: ApiItem[] = Array.isArray(items) ? items : [];
+        const list: Message[] = Array.isArray(items) ? items : [];
         const mapped: Message[] = list.map((i) => ({
           id: i.id,
           conversationId: i.conversationId,
-          codCli: i.conversation?.codCli,
+          conversation: i.conversation,
           content: i.content,
           createdAt: i.createdAt,
-          state: i.conversation?.state,
-          phone: i.conversation?.phone,
-          channel: i.channel ?? null,
+          channel: i.channel,
+          origin: i.origin,
         }));
         setMessages(mapped);
         setTotal(totalItems ?? null);
@@ -127,7 +97,11 @@ export default function MessagesTable() {
         const convId = typeof p?.id === 'number' ? p.id : (typeof p?.id === 'string' ? Number(p.id) : undefined);
         const newState = typeof p?.state === 'string' ? p.state : undefined;
         if (convId === undefined || Number.isNaN(convId)) return;
-        setMessages(curr => curr.map(m => (m.conversationId === convId ? { ...m, state: newState ?? m.state } : m)));
+        setMessages(curr => curr.map(m => (
+          m.conversationId === convId 
+            ? { ...m, conversation: { ...m.conversation!, state: newState ?? m.conversation?.state } } 
+            : m
+        )));
       } catch {}
     });
     return () => { off(); };
@@ -198,7 +172,7 @@ export default function MessagesTable() {
     return d;
   }
 
-  function preview(text: string, maxChars = 160): string {
+  function preview(text?: string, maxChars = 160): string {
     const normalized = (text || '').replace(/\s+/g, ' ').trim();
     if (normalized.length <= maxChars) return normalized;
     return normalized.slice(0, Math.max(0, maxChars - 1)) + '…';
@@ -279,28 +253,27 @@ export default function MessagesTable() {
               <tr
                 key={m.id}
                 className="border-b cursor-pointer hover:bg-gray-50"
-                onDoubleClick={() => openConversationsModal(m.phone)}
+                onDoubleClick={() => openConversationsModal(m.conversation?.phone)}
                 title="Duplo clique: abrir chat (modal)."
               >
                 <td className="px-4 py-2 font-mono">{m.id}</td>
-                <td className="px-4 py-2">{m.codCli ?? '-'}</td>
+                <td className="px-4 py-2">{m.conversation?.codCli ?? '-'}</td>
                 <td className="px-4 py-2 break-words max-w-prose whitespace-normal">
                   <span title={m.content}>{preview(m.content)}</span>
                 </td>
                 <td className="px-4 py-2">
                   <div className="flex items-center gap-2">
-                    <span>{formatPhone(m.phone)}</span>
-                    {/* removido botão de abrir página */}
+                    <span>{formatPhone(m.conversation?.phone)}</span>
                   </div>
                 </td>
                 <td className="px-4 py-2">{
                   <span className={`inline-block px-2 py-0.5 rounded text-xs ${
-                    ((m.state||'').toLowerCase()==='sent')? 'bg-gray-300 text-gray-800':
-                    ((m.state||'').toLowerCase()==='delivered')? 'bg-green-500 text-white':
-                    ((m.state||'').toLowerCase()==='read')? 'bg-yellow-400 text-black':
-                    ((m.state||'').toLowerCase()==='initial')? 'bg-blue-500 text-white':
-                    ((m.state||'').toLowerCase()==='failed')? 'bg-red-500 text-white':'bg-gray-200 text-gray-700'
-                  }`}>{mapState(m.state)}</span>
+                    ((m.conversation?.state||'').toLowerCase()==='sent')? 'bg-gray-300 text-gray-800':
+                    ((m.conversation?.state||'').toLowerCase()==='delivered')? 'bg-green-500 text-white':
+                    ((m.conversation?.state||'').toLowerCase()==='read')? 'bg-yellow-400 text-black':
+                    ((m.conversation?.state||'').toLowerCase()==='initial')? 'bg-blue-500 text-white':
+                    ((m.conversation?.state||'').toLowerCase()==='failed')? 'bg-red-500 text-white':'bg-gray-200 text-gray-700'
+                  }`}>{mapState(m.conversation?.state)}</span>
                 }</td>
                 <td className="px-4 py-2">{new Date(m.createdAt).toLocaleString()}</td>
               </tr>
@@ -361,10 +334,10 @@ export default function MessagesTable() {
         </div>
       </div>
 
-      {/* Chat por telefone */}
       {modalPhone && (
         <ConversationsChat phone={modalPhone} onClose={() => setModalPhone(null)} />
       )}
+
     </div>
   );
 }

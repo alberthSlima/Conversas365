@@ -2,8 +2,7 @@
 
 import { createContext, useContext, useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import * as signalR from '@microsoft/signalr';
-
-type ConversationUpdatedPayload = { id?: number | string; state?: string; json?: unknown };
+import { ConversationUpdatedPayload } from '@/types/hub';
 
 type HubAPI = {
   state: signalR.HubConnectionState | 'none';

@@ -1,20 +1,14 @@
 import { NextResponse } from 'next/server';
-import { requirePhoneNumberId, graphBaseUrl, authHeaders } from '@/lib/whatsapp';
+import { getGraphBaseUrl, getAuthHeaders, getWhatsAppConfig } from '@/libs/whatsapp';
+import { handleApiError } from '@/utils/errors';
+import { logger } from '@/utils/logger';
 
 export async function POST(req: Request) {
-  let config: ReturnType<typeof requirePhoneNumberId>;
   try {
-    config = requirePhoneNumberId();
-  } catch (e) {
-    return NextResponse.json(
-      { error: e instanceof Error ? e.message : 'WhatsApp credentials not configured' },
-      { status: 500 }
-    );
-  }
-
-  try {
+    const config = getWhatsAppConfig();
     const body = await req.json();
-    console.log('[API SEND] Received payload:', JSON.stringify(body, null, 2));
+    
+    logger.debug('WHATSAPP:SEND', 'Received payload', body);
 
     if (!body.to || typeof body.to !== 'string') {
       return NextResponse.json({ error: 'Campo "to" é obrigatório e deve ser uma string com o número' }, { status: 400 });
@@ -23,21 +17,20 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Nome do template é obrigatório' }, { status: 400 });
     }
 
-    const url = `${graphBaseUrl()}/${config.phoneNumberId}/messages`;
-    console.log('[API SEND] URL:', url);
+    const url = `${getGraphBaseUrl()}/${config.phoneNumberId}/messages`;
+    logger.debug('WHATSAPP:SEND', `URL: ${url}`);
     
     const res = await fetch(url, {
       method: 'POST',
       headers: {
-        ...authHeaders(config.token),
+        ...getAuthHeaders(config.token),
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
     });
 
     const responseText = await res.text();
-    console.log('[API SEND] WhatsApp Response Status:', res.status);
-    console.log('[API SEND] WhatsApp Response:', responseText);
+    logger.info('WHATSAPP:SEND', `Response Status: ${res.status}`, responseText);
 
     if (!res.ok) {
       return new NextResponse(responseText || 'WhatsApp API error', { status: res.status });
@@ -45,8 +38,7 @@ export async function POST(req: Request) {
 
     const data: unknown = JSON.parse(responseText);
     return NextResponse.json(data);
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : 'Unknown error';
-    return NextResponse.json({ error: msg }, { status: 500 });
+  } catch (error) {
+    return handleApiError(error);
   }
 }

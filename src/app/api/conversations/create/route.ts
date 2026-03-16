@@ -4,10 +4,15 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { ApiClient } from '@/infrastructure/http/ApiClient';
+import { ApiClient } from '@/libs/api';
 import { getTlsFetchOptions } from '@/lib/serverTls';
-import { Template, RenderedResponse } from '@/types/template';
-import { graphBaseUrl, authHeaders, requireToken } from '@/lib/whatsapp';
+import { Template, RenderedResponse } from '@/types/whatsapp';
+import { ConversationRequest } from '@/types/conversation';
+import { MessageRequest } from '@/types/message';
+import { getMediaInfo, downloadMedia } from '@/libs/whatsapp';
+import { uploadToBlob } from '@/libs/blob';
+import { handleApiError } from '@/utils/errors';
+import { logger } from '@/utils/logger';
 
 /**
  * Renderiza o template aplicando os parâmetros, igual ao C# RenderTemplateAsync
@@ -172,8 +177,8 @@ function renderTemplate(template: Template, sentComponents: Array<Record<string,
                 
                 if (subType === 'QUICK_REPLY') {
                   const payloadParam = cardParams.find(p => p.type === 'payload');
-                  console.log(`[RENDER] Botão QUICK_REPLY - Template text: "${templateButton?.text}", Payload: "${payloadParam?.payload}"`);
-                  
+                  logger.debug('RENDER', `Botão QUICK_REPLY - Template text: "${templateButton?.text}", Payload: "${payloadParam?.payload}"`);
+
                   rendered.Components.push({
                     Type: 'button',
                     SubType: 'QUICK_REPLY',
@@ -194,14 +199,15 @@ function renderTemplate(template: Template, sentComponents: Array<Record<string,
                   } catch {
                     domain = urlBase;
                   }
-                  
-                  console.log(`[RENDER] Botão URL Card ${cardIdx}:`);
-                  console.log(`  - Template text: "${templateButton?.text}"`);
-                  console.log(`  - URL base original: "${urlBase}"`);
-                  console.log(`  - Domínio extraído: "${domain}"`);
-                  console.log(`  - Sufixo enviado: "${urlSuffix}"`);
-                  console.log(`  - URL final: "${domain}${urlSuffix}"`);
-                  
+
+                  logger.debug('RENDER', `Botão URL Card ${cardIdx}`, {
+                    templateText: templateButton?.text,
+                    urlBaseOriginal: urlBase,
+                    dominioExtraido: domain,
+                    sufixoEnviado: urlSuffix,
+                    urlFinal: `${domain}${urlSuffix}`
+                  });
+
                   rendered.Components.push({
                     Type: 'button',
                     SubType: 'URL',
@@ -223,119 +229,32 @@ function renderTemplate(template: Template, sentComponents: Array<Record<string,
 }
 
 /**
- * Baixa uma mídia do WhatsApp
- * - Em desenvolvimento: salva localmente
- * - Em produção (Vercel): salva no Vercel Blob Storage
+ * Baixa uma mídia do WhatsApp e salva no Vercel Blob Storage (PRIVATE)
  */
-async function downloadMedia(mediaId: string, type: 'image' | 'video' | 'document' = 'image'): Promise<string | null> {
+async function downloadMediaToBlob(mediaId: string, type: 'image' | 'video' | 'document' = 'image'): Promise<string | null> {
   try {
-    const isVercel = process.env.VERCEL === '1';
+    logger.info('MEDIA', `Processando mídia ${mediaId}...`);
 
-    // Usar funções do whatsapp.ts para autenticação
-    const { token } = requireToken();
-    const baseUrl = graphBaseUrl();
+    // 1. Buscar informações da mídia
+    const mediaInfo = await getMediaInfo(mediaId);
+    logger.debug('MEDIA', `Mídia encontrada: ${mediaInfo.mime_type}, ${mediaInfo.file_size} bytes`);
 
-    console.log(`[MEDIA] Buscando informações da mídia ${mediaId}...`);
-    
-    // 1. Buscar URL da mídia com timeout
-    const mediaInfoResponse = await fetch(
-      `${baseUrl}/${mediaId}`,
-      {
-        headers: authHeaders(token),
-        signal: AbortSignal.timeout(15000),
-      }
-    );
+    // 2. Baixar mídia
+    const buffer = await downloadMedia(mediaInfo.url);
+    logger.debug('MEDIA', `Download concluído: ${buffer.length} bytes`);
 
-    if (!mediaInfoResponse.ok) {
-      console.error(`[MEDIA] Erro ao buscar informações da mídia: ${mediaInfoResponse.status}`);
-      const errorText = await mediaInfoResponse.text();
-      console.error(`[MEDIA] Resposta de erro:`, errorText);
-      return null;
-    }
-
-    const mediaInfo = await mediaInfoResponse.json() as { url?: string; mime_type?: string };
-    const mediaUrl = mediaInfo.url;
-
-    if (!mediaUrl) {
-      console.error('[MEDIA] URL da mídia não encontrada na resposta');
-      return null;
-    }
-
-    console.log(`[MEDIA] Baixando mídia de: ${mediaUrl}`);
-
-    // 2. Baixar o arquivo com timeout aumentado
-    const downloadResponse = await fetch(mediaUrl, {
-      headers: authHeaders(token),
-      signal: AbortSignal.timeout(30000), // 30 segundos de timeout
+    // 3. Upload para Blob
+    const result = await uploadToBlob(mediaId, buffer, {
+      type,
+      contentType: mediaInfo.mime_type,
     });
 
-    if (!downloadResponse.ok) {
-      console.error(`[MEDIA] Erro ao baixar mídia: ${downloadResponse.status}`);
-      return null;
-    }
+    logger.info('MEDIA', `Upload para Blob concluído: ${result.proxyUrl}`);
 
-    const arrayBuffer = await downloadResponse.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
+    return result.proxyUrl;
 
-    // 3. Salvar conforme ambiente
-    if (isVercel) {
-      // PRODUÇÃO: Salvar no Vercel Blob Storage (PRIVATE)
-      // Validar se o token do Blob está configurado
-      if (!process.env.BLOB_READ_WRITE_TOKEN) {
-        console.error('[MEDIA] BLOB_READ_WRITE_TOKEN não configurado');
-        return null;
-      }
-
-      console.log(`[MEDIA] Salvando no Vercel Blob (PRIVATE): ${mediaId}`);
-      
-      const { put } = await import('@vercel/blob');
-      const extension = type === 'video' ? 'mp4' : type === 'document' ? 'pdf' : 'jpg';
-      const filename = `whatsapp/${mediaId}.${extension}`;
-      
-      const blob = await put(filename, buffer, {
-        access: 'private', // Store é privado
-        contentType: mediaInfo.mime_type || 'image/jpeg',
-        addRandomSuffix: false,
-      });
-
-      console.log(`[MEDIA] Mídia salva no Blob privado: ${blob.url}`);
-      
-      // Retorna path da API proxy ao invés da URL direta do blob
-      const proxyUrl = `/api/media/proxy/${mediaId}.${extension}`;
-      return proxyUrl;
-      
-    } else {
-      // DESENVOLVIMENTO: Salvar localmente
-      const { writeFile, mkdir } = await import('fs/promises');
-      const { existsSync } = await import('fs');
-      const path = await import('path');
-
-      const mediaDir = path.join(process.cwd(), 'public', 'media', 'whatsapp');
-      const extension = type === 'video' ? 'mp4' : type === 'document' ? 'pdf' : 'jpg';
-      const filename = `${mediaId}.${extension}`;
-      const localPath = path.join(mediaDir, filename);
-      const publicUrl = `/media/whatsapp/${filename}`;
-
-      // Verificar se já existe
-      if (existsSync(localPath)) {
-        console.log(`[MEDIA] Mídia já existe localmente: ${publicUrl}`);
-        return publicUrl;
-      }
-
-      // Garantir que o diretório existe
-      if (!existsSync(mediaDir)) {
-        await mkdir(mediaDir, { recursive: true });
-      }
-
-      // Salvar o arquivo
-      await writeFile(localPath, buffer);
-
-      console.log(`[MEDIA] Mídia salva em: ${localPath} (${buffer.length} bytes)`);
-
-      return publicUrl;
-    }
   } catch (error) {
-    console.error(`[MEDIA] Erro ao baixar mídia ${mediaId}:`, error);
+    logger.error('MEDIA', `Erro ao processar mídia ${mediaId}`, error);
     return null;
   }
 }
@@ -363,17 +282,17 @@ async function downloadMediaFromTemplate(renderedTemplate: RenderedResponse): Pr
   }
 
   if (mediaIds.length === 0) {
-    console.log('[MEDIA] Nenhuma mídia para baixar');
+    logger.debug('MEDIA', 'Nenhuma mídia para baixar');
     return;
   }
 
-  console.log(`[MEDIA] Baixando ${mediaIds.length} mídia(s)...`);
+  logger.info('MEDIA', `Baixando ${mediaIds.length} mídia(s)...`);
 
   // Baixar todas as mídias em paralelo
-  const downloadPromises = mediaIds.map(({ id, type }) => downloadMedia(id, type));
+  const downloadPromises = mediaIds.map(({ id, type }) => downloadMediaToBlob(id, type));
   await Promise.all(downloadPromises);
 
-  console.log('[MEDIA] Download de mídias concluído');
+  logger.info('MEDIA', 'Download de mídias concluído');
 }
 
 export async function POST(request: NextRequest) {
@@ -394,16 +313,16 @@ export async function POST(request: NextRequest) {
     const renderedTemplate = templateStructure 
       ? renderTemplate(templateStructure as Template, sentComponents || [])
       : { Components: [] };
-      
-    console.log(`[API /conversations/create] Template renderizado:`, JSON.stringify(renderedTemplate, null, 2));
+
+    logger.info('API:CREATE', 'Template renderizado', renderedTemplate);
 
     // Baixar todas as mídias do template e salvar localmente
-    console.log(`[API /conversations/create] Iniciando download de mídias...`);
+    logger.info('API:CREATE', 'Iniciando download de mídias...');
     try {
       await downloadMediaFromTemplate(renderedTemplate);
-      console.log(`[API /conversations/create] Download de mídias finalizado com sucesso`);
+      logger.info('API:CREATE', 'Download de mídias finalizado com sucesso');
     } catch (mediaError) {
-      console.error(`[API /conversations/create] Erro ao baixar mídias:`, mediaError);
+      logger.error('API:CREATE', 'Erro ao baixar mídias', mediaError);
       // Não falha o request se o download de mídia falhar
     }
 
@@ -412,16 +331,15 @@ export async function POST(request: NextRequest) {
     const tlsOpts = await getTlsFetchOptions(convUrl);
 
     // 1. Criar/atualizar a conversa (API faz upsert automaticamente)
-    const conversationPayload = {
+    const conversationPayload: ConversationRequest = {
       phone,
       waId,
       state: 'initial',
       context: renderedTemplate, 
-      initiatedBy: 'SYSTEM'
+      initiatedBy: 'SYSTEM',
     };
 
-    console.log(`[API /conversations/create] Criando/atualizando conversa para waId: ${waId}`);
-    console.log(`[API /conversations/create] Payload:`, JSON.stringify(conversationPayload, null, 2));
+    logger.info('API:CREATE', `Criando/atualizando conversa para waId: ${waId}`, conversationPayload);
 
     const convResponse = await apiClient.post<{ id: number } | number>(
       '/api/v2/conversations',
@@ -429,11 +347,11 @@ export async function POST(request: NextRequest) {
       tlsOpts
     );
 
-    console.log(`[API /conversations/create] Resposta da API (tipo: ${typeof convResponse}):`, JSON.stringify(convResponse, null, 2));
-    
+    logger.debug('API:CREATE', `Resposta da API (tipo: ${typeof convResponse})`, convResponse);
+
     const conversationId = convResponse as number;
-    
-    console.log(`[API /conversations/create] Conversa ID extraído: ${conversationId}`);
+
+    logger.info('API:CREATE', `Conversa ID extraído: ${conversationId}`);
 
     if (!conversationId) {
       throw new Error('Não foi possível obter o ID da conversa');
@@ -444,22 +362,20 @@ export async function POST(request: NextRequest) {
       const msgUrl = apiClient.getFullUrl('/api/v2/messages');
       const msgTlsOpts = await getTlsFetchOptions(msgUrl);
 
-      const messagePayload = {
+      const messagePayload: MessageRequest = {
         conversationId,
         channel: 'whatsapp',
         content: bodyText,
         origin: 'Oferta',
       };
 
-      console.log(`[API /conversations/create] Criando mensagem:`, JSON.stringify(messagePayload, null, 2));
-      
+      logger.info('API:CREATE', 'Criando mensagem', messagePayload);
+
       try {
         const msgResponse = await apiClient.post('/api/v2/messages', messagePayload, msgTlsOpts);
-        console.log(`[API /conversations/create] Mensagem adicionada à conversa ${conversationId}`);
-        console.log(`[API /conversations/create] Resposta da mensagem:`, JSON.stringify(msgResponse, null, 2));
+        logger.info('API:CREATE', `Mensagem adicionada à conversa ${conversationId}`, msgResponse);
       } catch (msgError) {
-        console.error(`[API /conversations/create] Erro ao criar mensagem:`, msgError);
-        // Não vamos lançar o erro, apenas logamos
+        logger.error('API:CREATE', 'Erro ao criar mensagem', msgError);
       }
     }
 
@@ -470,15 +386,7 @@ export async function POST(request: NextRequest) {
     });
 
   } catch (error) {
-    console.error('[API /conversations/create] Erro:', error);
-    if (error instanceof Error) {
-      console.error('[API /conversations/create] Stack:', error.stack);
-    }
-    return NextResponse.json(
-      {
-        error: error instanceof Error ? error.message : 'Erro ao criar conversa',
-      },
-      { status: 500 }
-    );
+    logger.error('API:CREATE', 'Erro geral', error);
+    return handleApiError(error);
   }
 }

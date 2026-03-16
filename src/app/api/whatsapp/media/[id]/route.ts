@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireToken, graphBaseUrl, authHeaders } from '@/lib/whatsapp';
+import { getGraphBaseUrl, getAuthHeaders, getWhatsAppConfig } from '@/libs/whatsapp';
+import { handleApiError } from '@/utils/errors';
+import { logger } from '@/utils/logger';
 
 /**
  * GET /api/whatsapp/media/[id]
@@ -10,31 +12,23 @@ export async function GET(
   _req: NextRequest,
   context: { params: Promise<{ id: string }> }
 ) {
-  let token: string;
   try {
-    ({ token } = requireToken());
-  } catch (e) {
-    return NextResponse.json(
-      { error: e instanceof Error ? e.message : 'WHATSAPP_ACCESS_TOKEN não configurado' },
-      { status: 500 }
-    );
-  }
+    const config = getWhatsAppConfig();
+    const { id } = await context.params;
+    
+    if (!id?.trim()) {
+      return NextResponse.json({ error: 'ID da mídia é obrigatório' }, { status: 400 });
+    }
 
-  const { id } = await context.params;
-  if (!id?.trim()) {
-    return NextResponse.json({ error: 'ID da mídia é obrigatório' }, { status: 400 });
-  }
-
-  try {
-    const metaUrl = `${graphBaseUrl()}/${id.trim()}`;
+    const metaUrl = `${getGraphBaseUrl()}/${id.trim()}`;
     const metaRes = await fetch(metaUrl, {
-      headers: authHeaders(token),
+      headers: getAuthHeaders(config.token),
       cache: 'no-store',
     });
 
     if (!metaRes.ok) {
       const errText = await metaRes.text();
-      console.error('[API MEDIA GET] Meta response:', metaRes.status, errText);
+      logger.error('WHATSAPP:MEDIA:GET', `Meta response: ${metaRes.status}`, errText);
       return NextResponse.json(
         { error: errText || 'Mídia não encontrada' },
         { status: metaRes.status }
@@ -55,12 +49,12 @@ export async function GET(
     }
 
     const fileRes = await fetch(meta.url, {
-      headers: authHeaders(token),
+      headers: getAuthHeaders(config.token),
       cache: 'no-store',
     });
 
     if (!fileRes.ok) {
-      console.error('[API MEDIA GET] Lookaside response:', fileRes.status);
+      logger.error('WHATSAPP:MEDIA:GET', `Lookaside response: ${fileRes.status}`);
       return NextResponse.json(
         { error: 'Falha ao baixar arquivo da mídia' },
         { status: 502 }
@@ -76,9 +70,7 @@ export async function GET(
         'Cache-Control': 'private, max-age=3600',
       },
     });
-  } catch (e) {
-    console.error('[API MEDIA GET]', e);
-    const msg = e instanceof Error ? e.message : 'Erro desconhecido';
-    return NextResponse.json({ error: msg }, { status: 500 });
+  } catch (error) {
+    return handleApiError(error);
   }
 }

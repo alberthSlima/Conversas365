@@ -4,8 +4,9 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { ApiClient } from '@/infrastructure/http/ApiClient';
+import { ApiClient } from '@/libs/api';
 import { getTlsFetchOptions } from '@/lib/serverTls';
+import { handleApiError } from '@/utils/errors';
 
 export async function GET(request: NextRequest) {
   try {
@@ -19,10 +20,6 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json(products);
   } catch (error) {
-    console.error('[MEDEIROS API ERROR]', error);
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Erro ao buscar produtos' },
-      { status: 500 }
-    );
+    return handleApiError(error);
   }
 }

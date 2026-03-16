@@ -1,3 +1,5 @@
+import { logger } from '@/utils/logger';
+
 export type BackendConversation = {
 	id: number;
 	state?: string;
@@ -28,7 +30,7 @@ export type ConversationUI = {
 	updatedAt?: string;
 };
 
-export function parseContextText(context?: string): string {
+export function parseContextText(context?: string | unknown): string {
 	if (!context || typeof context !== 'string') return '';
 	const raw = context.trim();
 	if (!raw.startsWith('{')) return raw;
@@ -66,7 +68,7 @@ export function parseContextText(context?: string): string {
 	return raw;
 }
 
-export function parseContextButtons(context?: string): string[] {
+export function parseContextButtons(context?: string | unknown): string[] {
 	if (!context || typeof context !== 'string') return [];
 	const raw = context.trim();
 	if (!raw.startsWith('{')) return [];
@@ -82,7 +84,7 @@ export function parseContextButtons(context?: string): string[] {
 	return [];
 }
 
-export function parseContextImages(context?: string): string[] {
+export function parseContextImages(context?: string | unknown): string[] {
 	if (!context || typeof context !== 'string') return [];
 	const raw = context.trim();
 	if (!raw.startsWith('{')) return [];
@@ -112,7 +114,7 @@ export function parseContextImages(context?: string): string[] {
 	return [];
 }
 
-export function parseCarouselCards(context?: string): CarouselCard[] {
+export function parseCarouselCards(context?: string | unknown): CarouselCard[] {
 	if (!context || typeof context !== 'string') return [];
 	const raw = context.trim();
 	if (!raw.startsWith('{')) return [];
@@ -179,7 +181,7 @@ export function parseCarouselCards(context?: string): CarouselCard[] {
 		
 		return cards;
 	} catch (error) {
-		console.error('[DTO] Erro ao parsear carousel cards:', error);
+		logger.error('DTO', 'Erro ao parsear carousel cards', error);
 	}
 	return [];
 }

@@ -1,26 +1,19 @@
 import { NextResponse } from 'next/server';
-import { requireBusinessId, graphBaseUrl, authHeaders } from '@/lib/whatsapp';
-import { Template, WhatsAppResponse } from '@/types/template';
+import { getGraphBaseUrl, getAuthHeaders, getWhatsAppConfig } from '@/libs/whatsapp';
+import { handleApiError } from '@/utils/errors';
+import { Template, Templates } from '@/types/whatsapp';
+import { logger } from '@/utils/logger';
 
 export async function GET() {
-  let config: ReturnType<typeof requireBusinessId>;
   try {
-    config = requireBusinessId();
-  } catch (e) {
-    return NextResponse.json(
-      { error: e instanceof Error ? e.message : 'WhatsApp credentials not configured' },
-      { status: 500 }
-    );
-  }
-
-  try {
+    const config = getWhatsAppConfig();
     let allTemplates: Template[] = [];
-    let nextUrl: string | undefined = `${graphBaseUrl()}/${config.businessId}/message_templates`;
+    let nextUrl: string | undefined = `${getGraphBaseUrl()}/${config.businessId}/message_templates`;
 
     while (nextUrl) {
       const res = await fetch(nextUrl, {
         headers: {
-          ...authHeaders(config.token),
+          ...getAuthHeaders(config.token),
           Accept: 'application/json',
         },
         cache: 'no-store',
@@ -31,7 +24,7 @@ export async function GET() {
         return new NextResponse(txt || 'WhatsApp API error', { status: res.status });
       }
 
-      const data: WhatsAppResponse = await res.json();
+      const data: Templates = await res.json();
       
       // Adicionar templates desta página
       allTemplates = allTemplates.concat(data.data || []);
@@ -41,14 +34,13 @@ export async function GET() {
       
       // Limite de segurança (máximo 2500 templates = ~100 páginas)
       if (allTemplates.length > 2500) {
-        console.warn('Limite de 2500 templates atingido, parando paginação');
+        logger.warn('WHATSAPP:TEMPLATES', 'Limite de 2500 templates atingido, parando paginação');
         break;
       }
     }
 
     return NextResponse.json({ data: allTemplates });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : 'Unknown error';
-    return NextResponse.json({ error: msg }, { status: 500 });
+  } catch (error) {
+    return handleApiError(error);
   }
 }

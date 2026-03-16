@@ -1,26 +1,10 @@
 import type { NextRequest } from 'next/server';
-import { ApiClient } from '@/infrastructure/http/ApiClient';
+import { ApiClient } from '@/libs/api';
 import { getTlsFetchOptions } from '@/lib/serverTls';
+import { ConversationMessage } from '@/types/conversation';
+import { logger } from '@/utils/logger';
 
 export const runtime = 'nodejs';
-
-type ApiConversationItem = {
-  id?: number;
-  state?: string;
-  initiatedBy?: string;
-  context?: string;
-  createdAt?: string;
-  updatedAt?: string;
-};
-
-type MappedRow = {
-  id: number;
-  state?: string;
-  initiatedBy?: string;
-  context?: string;
-  createdAt: string;
-  updatedAt?: string;
-};
 
 export async function GET(req: NextRequest) {
   const phone = req.nextUrl.searchParams.get('phone');
@@ -41,7 +25,7 @@ export async function GET(req: NextRequest) {
         try {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
         } catch (error) {
-          console.error('[STREAM] Erro ao enviar dados:', error);
+          logger.error('STREAM', 'Erro ao enviar dados', error);
         }
       }
 
@@ -50,18 +34,18 @@ export async function GET(req: NextRequest) {
         try {
           const res = await client.getResponse(endpoint, tlsOpts);
           const raw: unknown = await res.json().catch(() => ([]));
-          const list: ApiConversationItem[] = Array.isArray(raw) ? (raw as ApiConversationItem[]) : [];
-          const mapped: MappedRow[] = list.map((item) => ({
-            id: item.id ?? 0,
-            state: item.state ?? undefined,
-            initiatedBy: item.initiatedBy ?? undefined,
-            context: item.context ?? undefined,
-            createdAt: item.createdAt ?? new Date().toISOString(),
-            updatedAt: item.updatedAt ?? undefined,
+          const list: ConversationMessage[] = Array.isArray(raw) ? (raw as ConversationMessage[]) : [];
+          const mapped: ConversationMessage[] = list.map((item) => ({
+            id: item.id,
+            state: item.state,
+            initiatedBy: item.initiatedBy,
+            context: item.context,
+            createdAt: item.createdAt,
+            updatedAt: item.updatedAt,
           }));
           send({ type: 'conversations', data: mapped });
         } catch (error) {
-          console.error('[STREAM] Erro no tick:', error);
+          logger.error('STREAM', 'Erro no tick', error);
           if (!closed) {
             send({ type: 'error' });
           }
@@ -90,7 +74,7 @@ export async function GET(req: NextRequest) {
           try {
             controller.close();
           } catch (error) {
-            console.error('[STREAM] Erro ao fechar controller:', error);
+            logger.error('STREAM', 'Erro ao fechar controller', error);
           }
         }
       });
